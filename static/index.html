@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DBEditor - Database Editor</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+
+    <!-- TOP NAV BAR -->
+    <header class="top-nav">
+        <div class="nav-left">
+            <button id="btn-files" class="circle-btn btn-files" title="Files Menu">
+                <i class="fa-solid fa-folder-open"></i>
+            </button>
+
+            <div class="db-title-container">
+                <span id="db-filename-display" class="db-filename-display">Untitled.db</span>
+                <span id="db-dirty-indicator" class="dirty-star hidden">*</span>
+            </div>
+            
+            <div class="quick-tools">
+                <button id="btn-undo" class="tool-btn" title="Undo"><i class="fa-solid fa-rotate-left"></i></button>
+                <button id="btn-redo" class="tool-btn" title="Redo"><i class="fa-solid fa-rotate-right"></i></button>
+                <button id="btn-quick-save" class="tool-btn" title="Save"><i class="fa-solid fa-floppy-disk"></i></button>
+            </div>
+        </div>
+
+        <div class="nav-center">
+            <div class="search-box-container">
+                <i class="fa-solid fa-magnifying-glass search-icon"></i>
+                <input type="text" id="search-input" placeholder="Search">
+                <button id="btn-search-scope" class="scope-toggle-btn" title="Search Scope Settings">
+                    <i class="fa-solid fa-caret-down" id="scope-caret"></i>
+                </button>
+            </div>
+        </div>
+
+        <div class="nav-right">
+            <button id="btn-logs-toggle" class="circle-btn btn-logs" title="System Logs">
+                <i class="fa-solid fa-terminal"></i>
+            </button>
+
+            <button id="btn-ai-toggle" class="circle-btn btn-ai" title="AI Assistant">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- Log Terminal Popup Window Modal -->
+    <div id="logs-modal" class="logs-modal-overlay hidden">
+        <div id="logs-window" class="terminal-window">
+            <!-- Top Bar Header with Dark Gray Semi-Transparent Ribbon -->
+            <div class="terminal-header" id="logs-window-header">
+                <div class="terminal-title">
+                    <i class="fa-solid fa-code"></i> Execution SQL Console
+                </div>
+            
+                <!-- Window Controls Moved to Top-Right Corner -->
+                <div class="window-controls">
+                    <button class="win-btn maximize-btn" id="logs-maximize-btn" title="Maximize">
+                        <i class="fa-regular fa-square"></i>
+                    </button>
+                    <button class="win-btn close-btn" id="logs-close-btn" title="Close">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Black Terminal Console Body -->
+            <div class="terminal-body" id="logs-content">
+                <div class="log-line system-msg">Initializing SQL Console...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SEARCH SCOPE MODAL -->
+    <div id="search-modal-overlay" class="modal-overlay hidden">
+        <div id="search-scope-modal" class="search-modal">
+            <div class="search-modal-header">
+                <h3>Search</h3>
+                <button id="btn-close-search" class="btn-close">&times;</button>
+            </div>
+
+            <div class="search-modal-body">
+                
+                <!-- Match Options (Match Case & Match Word) -->
+                <div class="search-options-row">
+                    <label class="search-option-label">
+                        <input type="checkbox" id="chk-match-case"> Match case
+                    </label>
+                    <label class="search-option-label">
+                        <input type="checkbox" id="chk-match-word"> Match whole word
+                    </label>
+                </div>
+                
+                <div class="search-scope-container">
+                    <label class="scope-title">Search in:</label>
+                
+                    <div class="scope-columns">
+                        <!-- Tables Selection Box -->
+                        <div class="scope-box">
+                            <div class="scope-box-header">
+                                <input type="checkbox" id="chk-all-tables" unchecked>
+                                <label for="chk-all-tables"><strong>Select Tables</strong></label>
+                            </div>
+                            <div id="search-tables-list" class="scope-list">
+                                <!-- Dynamically populated tables -->
+                            </div>
+                        </div>
+
+                        <!-- Columns Selection Box -->
+                        <div class="scope-box">
+                            <div class="scope-box-header">
+                                <input type="checkbox" id="chk-all-cols" checked>
+                                <label for="chk-all-cols"><strong>Select Columns</strong></label>
+                            </div>
+                            <div id="search-cols-list" class="scope-list">
+                                <!-- Dynamically populated columns -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Match Readout Indicator -->
+                <div id="search-match-status" class="search-match-status">No matches found</div>
+            </div>
+
+            <!-- Navigation Buttons -->
+            <div class="search-modal-footer">
+                <button id="btn-find-prev" class="btn-search-nav" disabled>&lt; Find Previous</button>
+                <button id="btn-find-next" class="btn-search-nav" disabled>Find Next &gt;</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN CONTENT LAYOUT -->
+    <div class="main-container">
+
+        <!-- LEFT SIDEBAR: FILES -->
+        <aside id="file-sidebar" class="sidebar left-sidebar hidden">
+            <div class="sidebar-header">
+                <h3>File Operations</h3>
+                <button id="btn-close-files" class="close-btn">&times;</button>
+            </div>
+            <ul class="sidebar-menu">
+                <li id="menu-import"><i class="fa-solid fa-file-import"></i> Import</li>
+                <li id="menu-new"><i class="fa-solid fa-file-circle-plus"></i> New</li>
+                <li id="menu-open"><i class="fa-solid fa-folder-open"></i> Open</li>
+                <li id="menu-save"><i class="fa-solid fa-floppy-disk"></i> Save</li>
+                <li id="menu-save-as"><i class="fa-solid fa-file-export"></i> Save As</li>
+                <li id="menu-export"><i class="fa-solid fa-file-excel"></i> Export</li>
+            </ul>
+        </aside>
+
+        <!-- CENTER: SHEETS & GRID -->
+        <main class="editor-workspace">
+            
+            <!-- TABS & PAGINATION BAR -->
+            <div class="sheets-tab-bar">
+                <!-- Left Section: Table Tabs & Add Button -->
+                <div class="tab-section-left">
+                    <div class="tabs-scroll-container" id="tabs-container">
+                        <!-- Dynamic sheet tabs rendered here -->
+                    </div>
+                    <button id="btn-add-table" class="add-tab-btn" title="Add New Table">+</button>
+                </div>
+
+                <!-- Right Section: Minimalist Pagination Controls -->
+                <div class="pagination-container" id="pagination-container">
+                    <button id="btn-first-page" class="page-btn" title="First Page">&lt;&lt;</button>
+                    <button id="btn-prev-page" class="page-btn" title="Previous Page">&lt;</button>
+                    <span class="page-indicator">
+                        Page <input type="number" id="current-page-input" class="page-input" value="1" min="1" step="1"> of <span id="total-pages">1</span>
+                    </span>
+                    <button id="btn-next-page" class="page-btn" title="Next Page">&gt;</button>
+                    <button id="btn-last-page" class="page-btn" title="Last Page">&gt;&gt;</button>
+                </div>
+            </div>
+
+            <!-- EXCEL GRID -->
+            <div class="grid-viewport" id="grid-viewport">
+                <table class="excel-table" id="excel-table">
+                    <thead id="grid-header">
+                        <!-- Excel letter headers A, B, C... -->
+                    </thead>
+                    <tbody id="grid-body">
+                        <!-- Row 0 (DB Col Names) and Rows 1-100 -->
+                    </tbody>
+                </table>
+            </div>
+
+        </main>
+
+        <!-- RIGHT SIDEBAR: AI ASSISTANT -->
+        <aside id="ai-sidebar" class="sidebar right-sidebar hidden">
+            <div class="sidebar-header">
+                <h3><i class="fa-solid fa-wand-magic-sparkles"></i> AI Assistant</h3>
+                <button id="btn-close-ai" class="close-btn">&times;</button>
+            </div>
+            <div class="chat-container" id="chat-container">
+                <div class="chat-message bot">
+                    Hello! How can I assist you today?
+                </div>
+            </div>
+            <div class="chat-input-area">
+                <textarea id="ai-input" placeholder="Ask AI to analyze or edit database..."></textarea>
+                <button id="btn-send-ai" class="send-btn"><i class="fa-solid fa-paper-plane"></i></button>
+            </div>
+        </aside>
+
+    </div>
+
+    <!-- TAB CONTEXT MENU -->
+    <div id="tab-context-menu" class="context-menu hidden">
+        <ul>
+            <li id="menu-rename-table"><i class="fa-solid fa-pen"></i> Rename</li>
+            <li id="menu-delete-table" class="danger"><i class="fa-solid fa-trash"></i> Delete</li>
+        </ul>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
