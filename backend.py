@@ -89,10 +89,11 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def update_staged_data(self, table_name: str, rows: list, columns: list):
+
+    def update_staged_data(self, table_name: str, rows: list, columns: list, page: int = 1, limit: int = None):
         """
-        Executes targeted SQL operations (CREATE, ALTER, DROP COLUMN, UPDATE, INSERT, DELETE)
-        directly against the active working session SQLite database file.
+        Executes targeted SQL operations against the active working session SQLite database file.
+        Supports full-table updates or page-scoped updates when limit is provided.
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -140,13 +141,18 @@ class DatabaseManager:
                     if col not in columns:
                         cursor.execute(f'ALTER TABLE "{table_name}" DROP COLUMN "{col}";')
 
-                # Fetch updated columns and rows from DB for row sync comparison
                 col_names_str = ", ".join([f'"{c}"' for c in columns]) if columns else ""
-                
+
                 if col_names_str:
-                    cursor.execute(
-                        f'SELECT _rowid_, {col_names_str} FROM "{table_name}" ORDER BY _rowid_ ASC;'
-                    )
+                    # Calculate page bounds
+                    offset = (page - 1) * limit if limit else 0
+
+                    # Fetch only rows for the specific page if limit is supplied
+                    query = f'SELECT _rowid_, {col_names_str} FROM "{table_name}" ORDER BY _rowid_ ASC'
+                    if limit is not None:
+                        query += f' LIMIT {int(limit)} OFFSET {int(offset)}'
+                
+                    cursor.execute(query)
                     db_data = cursor.fetchall()
                     db_rowid_s = [r[0] for r in db_data]
                     db_rows = [list(r[1:]) for r in db_data]
@@ -186,7 +192,7 @@ class DatabaseManager:
                                 sanitized_row,
                             )
 
-                    # 5. DELETE REMOVED ROWS
+                    # 5. DELETE REMOVED ROWS (Restricted only to the active page slice)
                     if len(rows) < len(db_rowid_s):
                         excess_ids = db_rowid_s[len(rows):]
                         placeholders = ", ".join(["?"] * len(excess_ids))
@@ -204,6 +210,7 @@ class DatabaseManager:
 
         self.refresh_staged_data_from_db()
         return True
+
 
     def get_recent_logs(self, limit: int = 50) -> list:
         """Reads and returns only pure SQL query logs from sql_queries.log."""
@@ -461,7 +468,7 @@ class DatabaseManager:
             }
         return summary
 
-    def get_table_page(self, table_name: str, page: int = 1, limit: int = 100, sort_by: str = None, order: str = "ASC") -> dict:
+    def get_table_page(self, table_name: str, page: int = 1, limit: int = 100, sort_orders: dict = None) -> dict:
         conn = self._get_connection()
         cursor = conn.cursor()
 
@@ -484,10 +491,18 @@ class DatabaseManager:
             if columns:
                 col_select = ", ".join([f'"{c}"' for c in columns])
             
-                # Validate sort column to prevent SQL injection
-                if sort_by and sort_by in columns:
-                    sort_order = "DESC" if str(order).upper() == "DESC" else "ASC"
-                    order_clause = f'ORDER BY "{sort_by}" {sort_order}, _rowid_ ASC'
+                order_parts = []
+                if sort_orders and isinstance(sort_orders, dict):
+                    for col_name, direction in sort_orders.items():
+                        # Validate sort column against table columns to prevent SQL injection
+                        if col_name in columns:
+                            sort_dir = "DESC" if str(direction).upper() == "DESC" else "ASC"
+                            order_parts.append(f'"{col_name}" {sort_dir}')
+
+                # Append fallback row order and construct ORDER BY clause
+                if order_parts:
+                    order_parts.append('_rowid_ ASC')
+                    order_clause = f"ORDER BY {', '.join(order_parts)}"
                 else:
                     order_clause = 'ORDER BY _rowid_ ASC'
 
@@ -510,51 +525,69 @@ class DatabaseManager:
         finally:
             conn.close()
 
-
     def search_tables(self, query_str: str, scope: dict, match_case: bool = False, match_word: bool = False):
         matches = []
-        page_size = 100  # Matches frontend pageSize
-
+        page_size = 100
         conn = self._get_connection()
         cursor = conn.cursor()
+
+        # Case insensitivity toggle in SQLite
+        if not match_case:
+            conn.execute("PRAGMA case_sensitive_like = OFF;")
+        else:
+            conn.execute("PRAGMA case_sensitive_like = ON;")
+
+        subqueries = []
+        params = []
 
         try:
             for table_name, columns in scope.items():
                 if not columns:
                     continue
 
-                quoted_cols = [f'"{col}"' for col in columns]
-                select_clause = ", ".join(quoted_cols)
-            
-                # Enforce explicit _rowid_ ASC ordering to match get_table_page
-                sql = f'SELECT _rowid_, {select_clause} FROM "{table_name}" ORDER BY _rowid_ ASC;'
+                for col in columns:
+                    # Build SQL filter for each targeted column
+                    if match_word:
+                        # SQLite REGEX operator if regex extension is loaded, or standard REGEXP
+                        subqueries.append(f'''
+                            SELECT '{table_name}' AS table_name, 
+                                   _rowid_ AS db_rowid, 
+                                '{col}' AS col_name, 
+                                "{col}" AS cell_val 
+                            FROM "{table_name}" 
+                            WHERE "{col}" REGEXP ?
+                        ''')
+                        params.append(rf'\b{re.escape(query_str)}\b')
+                    else:
+                        subqueries.append(f'''
+                            SELECT '{table_name}' AS table_name, 
+                                   _rowid_ AS db_rowid, 
+                                '{col}' AS col_name, 
+                                "{col}" AS cell_val 
+                            FROM "{table_name}" 
+                            WHERE "{col}" LIKE ?
+                        ''')
+                        params.append(f"%{query_str}%")
 
-                try:
-                    cursor.execute(sql)
-                    rows = cursor.fetchall()
-                except sqlite3.Error as e:
-                    logging.error(f"Error querying table {table_name}: {e}")
-                    continue
+            if not subqueries:
+                return []
 
-                flags = 0 if match_case else re.IGNORECASE
-                pattern = re.escape(query_str)
-                if match_word:
-                    pattern = rf'\b{pattern}\b'
-                regex = re.compile(pattern, flags)
+            full_sql = " UNION ALL ".join(subqueries) + " ORDER BY db_rowid ASC;"
+            cursor.execute(full_sql, params)
+            results = cursor.fetchall()
 
-                for db_rowid_x, row in enumerate(rows, start=1):
-                # row[0] is _rowid_; column values start at index 1
-                    for col_i, col_name in enumerate(columns):
-                        val = str(row[col_i + 1] or '')
+            for table_name, db_rowid, col_name, cell_val in results:
+                col_index = scope[table_name].index(col_name) if table_name in scope else 0
+                matches.append({
+                    'table': table_name,
+                    'row': db_rowid,
+                    'col_name': col_name,
+                    'col': col_index,
+                    'page': (db_rowid - 1) // page_size + 1
+                })
 
-                        if regex.search(val):
-                            matches.append({
-                                'table': table_name,
-                                'row': db_rowid_x,
-                                'col_name': col_name,
-                                'col': col_i,
-                                'page': (db_rowid_x - 1) // page_size + 1
-                            })
+        except sqlite3.Error as e:
+            logging.error(f"SQL Search Error: {e}")
         finally:
             conn.close()
 
