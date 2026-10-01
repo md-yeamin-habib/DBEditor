@@ -19,7 +19,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Pagination State
     let currentPage = 1;
     let totalPages = 1;
-    let totalRowsCount = 0;
     const pageSize = 100;
 
     // DOM Elements
@@ -82,7 +81,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let fileImportInput = null;
     let activeFileHandle = null;
     let hasBeenSavedBefore = false;
-    let currentSortState = { colIdx: -1, direction: 'none' };
+    let currentSortState = new Map();
 
     // Terminal / Logs Elements
     const logsToggleBtn = document.getElementById("btn-logs-toggle");
@@ -247,10 +246,299 @@ document.addEventListener('DOMContentLoaded', () => {
             await loadPageData(activeTable, 1);
         }
 
+        currentSortState.clear();
         renderTabs();
         renderGrid();
         resetHistory();
         attachEventListeners();
+    }
+
+    let stagedPayload = null;
+
+    async function sendAIQuery(queryText) {
+        try {
+            const response = await fetch('/api/ai/query', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    query: queryText,
+                    active_table: activeTable
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Server status ${response.status}`);
+            }
+
+            const data = await response.json();
+            handleAIQueryResponse(data);
+            return data;
+        } catch (error) {
+            console.error('Error executing AI Query:', error);
+            renderChatMessage(`⚠️ Error processing request: ${error.message}`, 'bot');
+        }
+    }
+
+    async function handleSendMessage() {
+        const aiInput = document.getElementById('ai-input');
+        if (!aiInput) return;
+
+        const query = aiInput.value.trim();
+        if (!query) return;
+
+        renderChatMessage(query, 'user');
+        aiInput.value = '';
+
+        const thinkingBubble = renderChatMessage('', 'thinking');
+
+        try {
+            await sendAIQuery(query);
+        } finally {
+            if (thinkingBubble) {
+                thinkingBubble.remove();
+            }
+        }
+    }
+
+    function handleAIQueryResponse(data) {
+        if (!data) return;
+
+        if (data.message) {
+            renderChatMessage(data.message, 'bot');
+        }
+
+        if (data.actions && Array.isArray(data.actions)) {
+            executeAIActions(data.actions);
+        }
+    }
+
+    async function confirmAIAction(accepted) {
+        clearConfirmationButtons();
+
+        if (!stagedPayload && accepted) {
+            console.warn('No staged payload available to confirm.');
+            return;
+        }
+
+        const payloadToSend = stagedPayload;
+        stagedPayload = null;
+
+        try {
+            const response = await fetch('/api/ai/confirm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    payload: payloadToSend,
+                    accepted: accepted
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Server status ${response.status}`);
+            }
+
+            const data = await response.json();
+
+            if (data.message) {
+                renderChatMessage(data.message, 'bot');
+            }
+
+            // Execute any non-refresh actions first (e.g. highlighting, table list updates)
+            if (data.actions && Array.isArray(data.actions)) {
+                executeAIActions(data.actions);
+            }
+
+            // ALWAYS refresh the grid if accepted to load fresh SQLite state
+            if (accepted) {
+                await refreshWorkspaceGrid();
+            }
+        } catch (error) {
+            console.error('Error confirming action:', error);
+            renderChatMessage(`⚠️ Error confirming action: ${error.message}`, 'bot');
+        }
+    }
+
+    async function executeAIActions(actions) {
+        if (!Array.isArray(actions)) return;
+
+        for (const action of actions) {
+            switch (action.type) {
+                case 'STAGED_CONFIRMATION':
+                    stagedPayload = action.payload;
+                    renderConfirmationButtons();
+                    break;
+
+                case 'HIGHLIGHT_DUPLICATES':
+                    // Handles highlighting duplicate rows returned by AI duplicate detection
+                    if (action.rowids && typeof highlightDuplicateRows === 'function') {
+                        highlightDuplicateRows(action.rowids);
+                    } else if (action.rowids && typeof applyRowHighlights === 'function') {
+                        applyRowHighlights(action.rowids, 'duplicate-row');
+                    } else {
+                        console.warn('Duplicate rowids received, but no highlight handler function found:', action.rowids);
+                    }
+                    break;
+
+                case 'REFRESH_TABLE_LIST':
+                    if (typeof fetchTableList === 'function') {
+                        await fetchTableList();
+                    }
+                    break;
+
+                case 'REFRESH_TABLE':
+                    // Avoid redundant grid re-renders if confirmAIAction already handles refresh
+                    await refreshWorkspaceGrid();
+                    break;
+
+                case 'SWITCH_TABLE':
+                    const targetTable = action.table_name || action.active_table;
+                    if (targetTable) {
+                        if (typeof fetchTableList === 'function') {
+                            await fetchTableList();
+                        }
+                        if (typeof switchActiveTable === 'function') {
+                            await switchActiveTable(targetTable);
+                        }
+                    } else {
+                        await refreshWorkspaceGrid();
+                    }
+                    break;
+
+                default:
+                    console.log('Unhandled AI action type:', action.type);
+                    break;
+            }
+        }
+    }
+
+    async function refreshWorkspaceGrid() {
+        if (typeof fetchTableList === 'function') {
+            await fetchTableList();
+        } else if (typeof loadPageData === 'function' && activeTable) {
+            await loadPageData(activeTable, currentPage || 1);
+        }
+        
+        if (typeof renderTabs === 'function') renderTabs();
+        if (typeof renderGrid === 'function') renderGrid();
+    }
+
+    async function switchActiveTable(tableName) {
+        if (!tableName) return;
+        if(activeTable === tableName) return;
+
+        if (activeTable) {
+            await syncActiveTableToBackend();
+        }
+
+        activeTable = tableName;
+        await refreshWorkspaceGrid();
+        if (typeof loadPageData === 'function') {
+            await loadPageData(activeTable, 1);
+        }
+        if (typeof renderTabs === 'function') renderTabs();
+        if (typeof renderGrid === 'function') renderGrid();
+    }
+
+
+    function renderChatMessage(text, sender = 'bot') {
+        const chatContainer = document.getElementById('chat-container') || document.getElementById('ai-chat-history');
+        if (!chatContainer) {
+            console.log(`[Chat - ${sender}]:`, text);
+            return null;
+        }
+
+        const msgDiv = document.createElement('div');
+        msgDiv.classList.add('chat-message', sender);
+
+        if (sender === 'thinking') {
+            msgDiv.innerHTML = `
+                <span class="typing-dot">.</span>
+                <span class="typing-dot">.</span>
+                <span class="typing-dot">.</span>
+            `;
+        } else {
+            let formattedText = String(text)
+                .replace(/\\rightarrow/g, '→')
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/`(.*?)`/g, '<code>$1</code>')
+                .replace(/\n/g, '<br>');
+            msgDiv.innerHTML = formattedText;
+        }
+
+        chatContainer.appendChild(msgDiv);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+        return msgDiv;
+    }
+
+    function renderConfirmationButtons() {
+        const chatContainer = document.getElementById('chat-container') || document.getElementById('ai-chat-history');
+        if (!chatContainer) return;
+
+        clearConfirmationButtons();
+
+        const btnGroup = document.createElement('div');
+        btnGroup.className = 'ai-confirmation-actions';
+
+        const acceptBtn = document.createElement('button');
+        acceptBtn.className = 'btn btn-accept';
+        acceptBtn.textContent = 'Accept Changes';
+        acceptBtn.addEventListener('click', () => confirmAIAction(true));
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'btn btn-cancel';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.addEventListener('click', () => confirmAIAction(false));
+
+        btnGroup.appendChild(acceptBtn);
+        btnGroup.appendChild(cancelBtn);
+
+        chatContainer.appendChild(btnGroup);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    function clearConfirmationButtons() {
+        document.querySelectorAll('.ai-confirmation-actions').forEach(el => el.remove());
+    }
+
+    // Direct UI Listener bindings for Chat Input
+    const sendBtn = document.getElementById('ai-send-btn') || document.getElementById('btn-send-ai');
+    const aiInput = document.getElementById('ai-input');
+
+    if (sendBtn) {
+        sendBtn.addEventListener('click', handleSendMessage);
+    }
+
+    if (aiInput) {
+        aiInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSendMessage();
+            }
+        });
+    }
+
+    async function syncActiveTableToBackend() {
+        if (!activeTable || !tablesData[activeTable]) return;
+
+        try {
+            const response = await fetch('/api/update_staging', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    table_name: activeTable,
+                    columns: tablesData[activeTable].columns || [],
+                    rows: tablesData[activeTable].rows || [],
+                    page: currentPage, 
+                    limit: pageSize    
+                })
+            });
+
+            if (!response.ok) {
+                console.error('Failed to sync staging table page to backend.');
+            }
+        } catch (error) {
+            console.error('Error syncing staging table:', error);
+        }
     }
 
     async function fetchTableList() {
@@ -271,16 +559,24 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+
     async function loadPageData(tableName, page = 1) { 
         if (!tableName) return;
         try {
             let url = `/api/data?table=${encodeURIComponent(tableName)}&page=${page}&limit=${pageSize}`;
 
-            if (currentSortState.colIdx !== null && currentSortState.direction !== 'none') {
-                const colName = tablesData[tableName]?.columns[currentSortState.colIdx];
-                if (colName) {
-                    url += `&sort_by=${encodeURIComponent(colName)}&order=${currentSortState.direction.toUpperCase()}`;
+            const sortOrders = {};
+            const columns = tablesData[tableName]?.columns || [];
+
+            currentSortState.forEach((dir, colIdx) => {
+                const colName = columns[colIdx];
+                if (colName && dir && dir !== 'none') {
+                    sortOrders[colName] = dir.toUpperCase();
                 }
+            });
+
+            if (Object.keys(sortOrders).length > 0) {
+                url += `&sort_orders=${encodeURIComponent(JSON.stringify(sortOrders))}`;
             }
 
             const response = await fetch(url);
@@ -306,7 +602,6 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error(`Error loading page ${page} for table ${tableName}:`, err);
         }
     }
-
 
     function updatePaginationUI(page, total) {
         currentPage = page;
@@ -424,11 +719,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const sortBtn = document.createElement('button');
             sortBtn.className = 'btn-col-sort';
 
-            if (currentSortState.colIdx === c && currentSortState.direction === 'asc') {
-                sortBtn.innerText = '▲';
+            const colSortDir = currentSortState.get(c) || 'none';
+
+            if (colSortDir === 'asc') {
+                sortBtn.innerText = '↑';
                 sortBtn.classList.add('active-sort');
-            } else if (currentSortState.colIdx === c && currentSortState.direction === 'desc') {
-                sortBtn.innerText = '▼';
+            } else if (colSortDir === 'desc') {
+                sortBtn.innerText = '↓';
                 sortBtn.classList.add('active-sort');
             } else {
                 sortBtn.innerText = '↕';
@@ -913,6 +1210,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (dbFilenameDisplay) dbFilenameDisplay.textContent = handle.name;
 
                     hasBeenSavedBefore = true;
+                    currentSortState.clear();
                     resetHistory();
                     setDirty(false);
                     renderTabs();
@@ -964,6 +1262,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (dbFilenameDisplay) dbFilenameDisplay.textContent = result.filename || file.name;
                         activeFileHandle = null;
                         hasBeenSavedBefore = true;
+                        currentSortState.clear();
                         resetHistory();
                         setDirty(false);
                         renderTabs();
@@ -1096,7 +1395,7 @@ document.addEventListener('DOMContentLoaded', () => {
         renderTabs();
         renderGrid();
         updateUndoRedoUI();
-        await updateStagingOnServer();
+        await syncActiveTableToBackend();
     }
 
     async function redo() {
@@ -1113,7 +1412,7 @@ document.addEventListener('DOMContentLoaded', () => {
         renderTabs();
         renderGrid();
         updateUndoRedoUI();
-        await updateStagingOnServer();
+        await syncActiveTableToBackend();
     }
 
     function resetHistory() {
@@ -1251,15 +1550,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function sortActiveTable(colIdx) {
         if (!activeTable || !tablesData[activeTable]) return;
-        const currentData = tablesData[activeTable];
-        if (!currentData.rows) return;
 
-        if (currentSortState.colIdx !== colIdx) {
-            currentSortState = { colIdx: colIdx, direction: 'asc' };
+        const currentDir = currentSortState.get(colIdx) || 'none';
+
+        if (currentDir === 'none') {
+            currentSortState.set(colIdx, 'asc');
+        } else if (currentDir === 'asc') {
+            currentSortState.set(colIdx, 'desc');
         } else {
-            if (currentSortState.direction === 'none') currentSortState.direction = 'asc';
-            else if (currentSortState.direction === 'asc') currentSortState.direction = 'desc';
-            else currentSortState.direction = 'none';
+            currentSortState.delete(colIdx);
         }
 
         currentPage = 1;    
@@ -1463,7 +1762,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (isCut) {
             setDirty(true);
-            updateStagingOnServer();
+            syncActiveTableToBackend();
         }
     }
 
@@ -1544,7 +1843,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         setDirty(true);
         renderGrid();
-        updateStagingOnServer();
+        syncActiveTableToBackend();
     }
 
     function handleDelete() {
@@ -1579,99 +1878,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (isModified) {
             setDirty(true);
-            if (typeof updateStagingOnServer === 'function') {
-                updateStagingOnServer();
+            if (typeof syncActiveTableToBackend === 'function') {
+                syncActiveTableToBackend();
             }
         }
     }
+ 
 
-    function scrapeActiveGridState() {
-        if (!activeTable) return;
-
-        const headerSpans = gridBody.querySelectorAll('.row-0-cell .col-header-text');
-        const cleanColumns = [];
-        headerSpans.forEach((span) => {
-            cleanColumns.push(span.innerText.trim());
-        });
-
-        while (cleanColumns.length > 0 && cleanColumns[cleanColumns.length - 1] === '') {
-            cleanColumns.pop();
-        }
-
-        const bodyRows = Array.from(gridBody.querySelectorAll('tr')).slice(1);
-        const scrapedRows = [];
-
-        bodyRows.forEach((tr) => {
-            const rowCells = tr.querySelectorAll('td[contenteditable="true"]');
-            const rowData = [];
-            let hasValue = false;
-
-            rowCells.forEach((td, cIdx) => {
-                const val = td.innerText.trim();
-                if (val !== '') hasValue = true;
-                rowData[cIdx] = val;
-            });
-
-            if (hasValue) {
-                scrapedRows.push(rowData.slice(0, Math.max(cleanColumns.length, 1)));
-            }
-        });
-
-        tablesData[activeTable] = {
-            columns: cleanColumns.length > 0 ? cleanColumns : ['Column1'],
-            rows: scrapedRows
-        };
-    }
-
-    async function updateStagingOnServer() {
-        if (!activeTable) return;
-        scrapeActiveGridState();
-
-        await fetch('/api/update_staging', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                table_name: activeTable,
-                columns: tablesData[activeTable].columns,
-                rows: tablesData[activeTable].rows
-            })
-        });
-    }
 
     function sanitizeTablesData() {
-        scrapeActiveGridState();
+    if (!activeTable || !tablesData[activeTable]) return;
 
-        Object.keys(tablesData).forEach(tableName => {
-            const table = tablesData[tableName];
-            if (!table) return;
+    const table = tablesData[activeTable];
+    if (!table || !Array.isArray(table.rows)) return;
 
-            table.rows = table.rows.filter(row => 
-                Array.isArray(row) && row.some(cell => cell !== undefined && String(cell).trim() !== '')
-            );
+    // Filter empty rows only within the current page scope
+    table.rows = table.rows.filter(row => 
+        Array.isArray(row) && row.some(cell => cell !== undefined && String(cell).trim() !== '')
+    );
 
-            const activeColIndices = [];
-            const maxCols = Math.max(table.columns.length, ...table.rows.map(r => r.length));
-
-            for (let c = 0; c < maxCols; c++) {
-                const colHeaderHasValue = table.columns[c] && table.columns[c].trim() !== '';
-                const colDataHasValue = table.rows.some(r => r[c] && String(r[c]).trim() !== '');
-
-                if (colHeaderHasValue || colDataHasValue) {
-                    activeColIndices.push(c);
-                }
-            }
-
-            table.columns = activeColIndices.map((cIdx, i) => table.columns[cIdx] || `Column_${i + 1}`);
-            table.rows = table.rows.map(row => activeColIndices.map(cIdx => row[cIdx] || ''));
-        });
-    }
+    // Sync only the current page view back to the staging table on backend
+    syncActiveTableToBackend();
+}
 
     async function saveDatabase() {
-        if (!hasBeenSavedBefore) {
-            await handleSaveAs();
-            return;
-        }
-
+        // 1. Sync current page edits to server first
         sanitizeTablesData();
 
         let filepathVal = dbFilenameDisplay ? dbFilenameDisplay.textContent.trim() : 'database.db';
@@ -1679,10 +1910,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!filepathVal.endsWith('.db')) filepathVal = `${filepathVal}.db`;
 
         try {
+            // Post without overwriting tablesData in the body - server streams intact working_session.db
             const response = await fetch('/api/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filepath: filepathVal, tables: tablesData })
+                body: JSON.stringify({ filepath: filepathVal })
             });
 
             if (!response.ok) {
@@ -1720,12 +1952,11 @@ document.addEventListener('DOMContentLoaded', () => {
     async function handleSaveAs() {
         let defaultName = dbFilenameDisplay ? dbFilenameDisplay.textContent.trim() : 'database.db';
         if (!defaultName) defaultName = 'database.db';
-        if (!defaultName.endsWith('.db')) defaultName = `${defaultName.split('.')[0]}.db`;
+
+        sanitizeTablesData();
 
         if ('showSaveFilePicker' in window) {
             try {
-                sanitizeTablesData();
-
                 const handle = await window.showSaveFilePicker({
                     suggestedName: defaultName,
                     types: [{
@@ -1737,7 +1968,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const response = await fetch('/api/save', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filepath: handle.name, tables: tablesData })
+                    body: JSON.stringify({ filepath: handle.name })
                 });
 
                 if (!response.ok) {
@@ -1746,7 +1977,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 const blob = await response.blob();
-
                 const writable = await handle.createWritable();
                 await writable.write(blob);
                 await writable.close();
@@ -1770,7 +2000,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function exportXlsx() {
-        scrapeActiveGridState();
+        syncActiveTableToBackend();
         try {
             const response = await fetch('/api/export_xlsx', {
                 method: 'POST',
@@ -1822,7 +2052,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setDirty(true);
         renderTabs();
         renderGrid();
-        updateStagingOnServer();
+        syncActiveTableToBackend();
     }
 
     async function handleRenameTable(oldName) {
@@ -1938,6 +2168,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (dbFilenameDisplay) dbFilenameDisplay.textContent = 'Untitled.db';
                 activeFileHandle = null;
                 hasBeenSavedBefore = false;
+                currentSortState.clear();
                 resetHistory();
                 setDirty(false);
                 renderTabs();
