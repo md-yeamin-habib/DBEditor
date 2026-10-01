@@ -353,11 +353,6 @@ mark.search-match.active-match {
     z-index: 90;
 }
 
-.right-sidebar {
-    border-right: none;
-    border-left: 1px solid #d1d1d1;
-    width: 350px;
-}
 
 .sidebar-header {
     padding: 12px;
@@ -400,53 +395,221 @@ mark.search-match.active-match {
     color: #107c41;
 }
 
-/* AI CHAT */
+/* ==========================================
+   AI SIDEBAR (FIXED WIDTH)
+   ========================================== */
+.right-sidebar {
+    width: 360px;
+    min-width: 360px;
+    max-width: 360px;
+    background: #f8f9fa;
+    border-left: 1px solid #d1d1d1;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    box-shadow: -2px 0 8px rgba(0, 0, 0, 0.05);
+}
+
+/* ==========================================
+   AI CHAT MESSAGES & BUBBLES
+   ========================================== */
 .chat-container {
     flex: 1;
-    padding: 10px;
+    padding: 16px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    background: #f9f9f9;
+    gap: 12px;
+    background: #f8f9fa;
 }
 
+/* Base Chat Bubble */
 .chat-message {
-    padding: 8px 12px;
-    border-radius: 6px;
-    font-size: 12px;
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 13.5px;
     line-height: 1.4;
+    max-width: 80%;               /* Caps bubble width */
+    width: fit-content;           /* Shrinks box snugly around text */
+    text-align: left !important;  /* Force normal left-to-right text reading inside bubble */
+    white-space: normal;          /* Allows clean standard text wrapping */
+    word-wrap: break-word;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+    display: block;               /* Prevents inline/flex text distortion */
 }
 
-.chat-message.bot {
+/* User Messages: Blueish background, aligned RIGHT */
+.chat-message.user {
+    align-self: flex-end;
+    margin-left: auto;
+    margin-right: 0;
     background: #e8f0fe;
+    color: #202124;
+    border: 1px solid #d2e3fc;
+    border-radius: 12px 12px 2px 12px;
+    text-align: right;
+    max-width: 80%;
+}
+
+/* AI / Bot Messages: White background, aligned LEFT */
+.chat-message.bot,
+.chat-message.ai {
+    align-self: flex-start;
+    margin-left: 0;
+    margin-right: auto;
+    background-color: #ffffff;
+    color: #202124;
+    border: 1px solid #e0e0e0;
+    border-radius: 12px 12px 12px 2px;
+    text-align: left;
+    max-width: 85%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+/* Confirmation Action Buttons Container */
+.ai-confirmation-actions {
+    display: flex;
+    gap: 10px;
+    margin: 10px 0;
     align-self: flex-start;
 }
 
+.ai-confirmation-actions .btn {
+    background-color: #ffffff;
+    padding: 7px 15px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.ai-confirmation-actions .btn-accept {
+    border: 1px solid #28a745;
+    color: #28a745;
+}
+
+.ai-confirmation-actions .btn-accept:hover {
+    background-color: #28a745;
+    color: #ffffff;
+}
+
+.ai-confirmation-actions .btn-cancel {
+    border: 1px solid #dc3545;
+    color: #dc3545;
+}
+
+.ai-confirmation-actions .btn-cancel:hover {
+    background-color: #dc3545;
+    color: #ffffff;
+}
+
+/* Data Table Grid Highlights */
+table th.ai-highlight-add, 
+table td.ai-highlight-add {
+    background-color: rgba(40, 167, 69, 0.2) !important;
+    border: 1px dashed #28a745 !important;
+}
+
+table th.ai-highlight-remove, 
+table td.ai-highlight-remove {
+    background-color: rgba(220, 53, 69, 0.2) !important;
+    border: 1px dashed #dc3545 !important;
+}
+
+table tr.ai-highlight-duplicate,
+table tr.ai-highlight-duplicate td {
+    background-color: rgba(255, 193, 7, 0.25) !important;
+}
+
+/* Cell Value Difference / Edit Highlight */
+table td.ai-highlight-diff {
+    background-color: rgba(255, 193, 7, 0.35) !important;
+    border: 2px dashed #ffc107 !important;
+    font-weight: bold;
+}
+
+/* ==========================================
+   CHAT INPUT AREA
+   ========================================== */
 .chat-input-area {
-    padding: 8px;
-    border-top: 1px solid #eee;
+    padding: 12px;
+    border-top: 1px solid #e0e0e0;
+    background: #ffffff;
     display: flex;
-    gap: 6px;
+    gap: 8px;
+    align-items: center;
 }
 
 #ai-input {
     flex: 1;
-    height: 40px;
+    height: 42px;
     border: 1px solid #ccc;
-    border-radius: 4px;
-    padding: 6px;
-    font-size: 12px;
+    border-radius: 6px;
+    padding: 10px;
+    font-size: 13.5px;
+    line-height: 1.4;
     resize: none;
+    outline: none;
+    font-family: inherit;
+    box-sizing: border-box;
+}
+
+#ai-input:focus {
+    border-color: #1b6ec2;
 }
 
 .send-btn {
     background: #1b6ec2;
-    color: white;
+    color: #ffffff;
     border: none;
-    padding: 0 12px;
-    border-radius: 4px;
+    height: 42px;
+    width: 42px;
+    border-radius: 6px;
     cursor: pointer;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.15s ease;
+}
+
+.send-btn:hover {
+    background: #155799;
+}
+
+/* ==========================================
+   THINKING / TYPING ANIMATION (...)
+   ========================================== */
+.chat-message.thinking {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 12px 16px;
+}
+
+.typing-dot {
+    width: 6px;
+    height: 6px;
+    background-color: #1a73e8;
+    border-radius: 50%;
+    display: inline-block;
+    animation: typingBounce 1.4s infinite ease-in-out both;
+}
+
+.typing-dot:nth-child(1) { animation-delay: -0.32s; }
+.typing-dot:nth-child(2) { animation-delay: -0.16s; }
+
+@keyframes typingBounce {
+    0%, 80%, 100% { 
+        transform: scale(0.6);
+        opacity: 0.4;
+    } 
+    40% { 
+        transform: scale(1.1);
+        opacity: 1;
+    }
 }
 
 /* WORKSPACE & TABS */
@@ -594,7 +757,6 @@ mark.search-match.active-match {
     background-color: #ffffff;
 }
 
-/* --- STICKY HEADERS --- */
 /* --- STICKY HEADERS --- */
 
 /* 1. Sticky Column Headers (A, B, C...) */
