@@ -253,6 +253,28 @@ document.addEventListener('DOMContentLoaded', () => {
         attachEventListeners();
     }
 
+    function truncateMiddle(str, maxLength = 22) {
+        if (!str || str.length <= maxLength) return str;
+
+        const ellipsis = "...";
+        const charsToShow = maxLength - ellipsis.length;
+    
+        const frontChars = Math.ceil(charsToShow * 0.7);
+        const backChars = Math.floor(charsToShow * 0.3);
+
+        const front = str.slice(0, frontChars);
+        const back = str.slice(-backChars);
+
+        return `${front}${ellipsis}${back}`;
+    }
+
+    function updateFileNameDisplay(fullFileName) {
+        if (!dbFilenameDisplay) return;
+    
+        dbFilenameDisplay.textContent = truncateMiddle(fullFileName, 25);
+        dbFilenameDisplay.title = fullFileName;
+    }
+
     async function sendAIQuery(queryText) {
         try {
             const response = await fetch('/api/ai/query', {
@@ -1591,7 +1613,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         await loadPageData(activeTable, 1);
                     }
 
-                    if (dbFilenameDisplay) dbFilenameDisplay.textContent = handle.name;
+                    if (dbFilenameDisplay) updateFileNameDisplay(handle.name);
 
                     hasBeenSavedBefore = true;
                     currentSortState.clear();
@@ -1643,7 +1665,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             await loadPageData(activeTable, 1);
                         }
 
-                        if (dbFilenameDisplay) dbFilenameDisplay.textContent = result.filename || file.name;
+                        if (dbFilenameDisplay) updateFileNameDisplay(result.filename || file.name);
                         activeFileHandle = null;
                         hasBeenSavedBefore = true;
                         currentSortState.clear();
@@ -2325,9 +2347,8 @@ document.addEventListener('DOMContentLoaded', () => {
     async function saveDatabase() {
         // 1. MUST await syncing current page edits to server first
         await sanitizeTablesData();
-
-        let filepathVal = dbFilenameDisplay ? dbFilenameDisplay.textContent.trim() : 'database.db';
-        if (!filepathVal) filepathVal = 'database.db';
+        let rawName = dbFilenameDisplay ? (dbFilenameDisplay.title || dbFilenameDisplay.textContent).trim() : 'database.db';
+        let filepathVal = rawName || 'database.db';
         if (!filepathVal.endsWith('.db')) filepathVal = `${filepathVal}.db`;
 
         try {
@@ -2360,7 +2381,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.URL.revokeObjectURL(downloadUrl);
             }
 
-            if (dbFilenameDisplay) dbFilenameDisplay.textContent = filepathVal;
+            if (dbFilenameDisplay) updateFileNameDisplay(filepathVal);
             hasBeenSavedBefore = true;
             setDirty(false);
             if (typeof renderTabs === 'function') renderTabs();
@@ -2375,7 +2396,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function handleSaveAs() {
-        let defaultName = dbFilenameDisplay ? dbFilenameDisplay.textContent.trim() : 'database.db';
+        let defaultName = dbFilenameDisplay ? (dbFilenameDisplay.title || dbFilenameDisplay.textContent).trim() : 'database.db';
         if (!defaultName) defaultName = 'database.db';
 
         // 1. MUST await syncing active page edits first
@@ -2409,7 +2430,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 activeFileHandle = handle;
                 hasBeenSavedBefore = true;
-                if (dbFilenameDisplay) dbFilenameDisplay.textContent = handle.name;
+                if (dbFilenameDisplay) updateFileNameDisplay(handle.name);
 
                 setDirty(false);
                 if (typeof renderTabs === 'function') renderTabs();
@@ -2444,9 +2465,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const blob = await response.blob();
-
-            const filename = dbFilenameDisplay && dbFilenameDisplay.textContent
-                ? dbFilenameDisplay.textContent.replace(/\.[^/.]+$/, "") + '.xlsx'
+            
+            const fullFileName = dbFilenameDisplay ? (dbFilenameDisplay.title || dbFilenameDisplay.textContent) : '';
+            const filename = fullFileName
+                ? fullFileName.replace(/\.[^/.]+$/, "") + '.xlsx'
                 : 'exported_database.xlsx';
 
             const downloadUrl = window.URL.createObjectURL(blob);
@@ -2595,7 +2617,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 await fetch('/api/new', { method: 'POST' });
                 initDefaultTable(); 
-                if (dbFilenameDisplay) dbFilenameDisplay.textContent = 'Untitled.db';
+                if (dbFilenameDisplay) updateFileNameDisplay('Untitled.db');
                 activeFileHandle = null;
                 hasBeenSavedBefore = false;
                 currentSortState.clear();
