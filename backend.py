@@ -5,6 +5,14 @@ import sqlite3
 import openpyxl
 import shutil 
 import logging
+import sys
+
+
+# Custom Handler that forces Python to write log lines to disk instantly
+class FlushingFileHandler(logging.FileHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
 
 # Clean HH:MM:SS time format without milliseconds
 logging.basicConfig(
@@ -12,11 +20,10 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
     handlers=[
-        logging.FileHandler("sql_queries.log", mode="a"),
-        logging.StreamHandler(),
+        FlushingFileHandler("sql_queries.log", mode="a", encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
     ],
 )
-
 def log_sql(query):
     """Callback function to capture and format executed SQL statements (ignoring SELECT & PRAGMA)."""
     clean_query = " ".join(query.split())
@@ -211,7 +218,6 @@ class DatabaseManager:
         self.refresh_staged_data_from_db()
         return True
 
-
     def get_recent_logs(self, limit: int = 50) -> list:
         """Reads and returns only pure SQL query logs from sql_queries.log."""
         log_file = "sql_queries.log"
@@ -219,7 +225,8 @@ class DatabaseManager:
             return []
 
         try:
-            with open(log_file, "r", encoding="utf-8") as f:
+            # errors="ignore" drops invalid bytes instead of crashing
+            with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
 
             # Filter strictly for 'EXEC SQL:' lines while excluding SELECT and PRAGMA
@@ -231,9 +238,9 @@ class DatabaseManager:
                         filtered_logs.append(line.strip())
 
             return filtered_logs[-limit:]
-        except Exception:
+        except Exception as e:
+            logging.error(f"Error reading logs: {e}")
             return []
-
 
     def get_downloads_path(self) -> Path:
         return Path.home() / "Downloads"
@@ -531,7 +538,6 @@ class DatabaseManager:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Case insensitivity toggle in SQLite
         if not match_case:
             conn.execute("PRAGMA case_sensitive_like = OFF;")
         else:
@@ -546,26 +552,37 @@ class DatabaseManager:
                     continue
 
                 for col in columns:
-                    # Build SQL filter for each targeted column
+                    # Valid SQLite subquery syntax for UNION ALL
                     if match_word:
-                        # SQLite REGEX operator if regex extension is loaded, or standard REGEXP
                         subqueries.append(f'''
                             SELECT '{table_name}' AS table_name, 
-                                   _rowid_ AS db_rowid, 
-                                '{col}' AS col_name, 
-                                "{col}" AS cell_val 
-                            FROM "{table_name}" 
-                            WHERE "{col}" REGEXP ?
+                                   db_rowid, 
+                                   visual_pos, 
+                                   '{col}' AS col_name, 
+                                   cell_val 
+                            FROM (
+                                SELECT _rowid_ AS db_rowid,
+                                       "{col}" AS cell_val,
+                                       ROW_NUMBER() OVER (ORDER BY _rowid_ ASC) AS visual_pos
+                                FROM "{table_name}"
+                            ) 
+                            WHERE cell_val REGEXP ?
                         ''')
                         params.append(rf'\b{re.escape(query_str)}\b')
                     else:
                         subqueries.append(f'''
                             SELECT '{table_name}' AS table_name, 
-                                   _rowid_ AS db_rowid, 
-                                '{col}' AS col_name, 
-                                "{col}" AS cell_val 
-                            FROM "{table_name}" 
-                            WHERE "{col}" LIKE ?
+                                   db_rowid, 
+                                   visual_pos, 
+                                   '{col}' AS col_name, 
+                                   cell_val 
+                            FROM (
+                                SELECT _rowid_ AS db_rowid,
+                                       "{col}" AS cell_val,
+                                       ROW_NUMBER() OVER (ORDER BY _rowid_ ASC) AS visual_pos
+                                FROM "{table_name}"
+                            ) 
+                            WHERE cell_val LIKE ?
                         ''')
                         params.append(f"%{query_str}%")
 
@@ -576,14 +593,21 @@ class DatabaseManager:
             cursor.execute(full_sql, params)
             results = cursor.fetchall()
 
-            for table_name, db_rowid, col_name, cell_val in results:
+            for table_name, db_rowid, visual_pos, col_name, cell_val in results:
                 col_index = scope[table_name].index(col_name) if table_name in scope else 0
+                
+                # 1-based page index
+                calc_page = ((visual_pos - 1) // page_size) + 1
+                
+                # 1-based row index within that page (1..100)
+                row_in_page = ((visual_pos - 1) % page_size) + 1
+
                 matches.append({
                     'table': table_name,
-                    'row': db_rowid,
+                    'row': row_in_page,      # Matches DOM data-row="1..100"
                     'col_name': col_name,
                     'col': col_index,
-                    'page': (db_rowid - 1) // page_size + 1
+                    'page': calc_page        # Matches target page
                 })
 
         except sqlite3.Error as e:
@@ -592,3 +616,4 @@ class DatabaseManager:
             conn.close()
 
         return matches
+    
