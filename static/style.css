@@ -62,27 +62,33 @@ body {
 .db-title-container {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
+    width: 200px; 
+    flex-shrink: 0;
 }
 
 .db-filename-display {
     font-size: 15px;
     font-weight: 600;
-    padding: 4px 8px;
+    padding: 4px 6px;
     color: #222;
     user-select: none;
+    white-space: nowrap; 
 }
 
 .dirty-star {
     color: #d93025;
     font-size: 18px;
     font-weight: bold;
+    flex-shrink: 0;
 }
+
 
 .hidden {
     display: none !important;
 }
 
+/* QUICK TOOLS */
 .quick-tools {
     display: flex;
     gap: 2px;
