@@ -505,11 +505,11 @@ mark.search-match.active-match {
     color: #ffffff;
 }
 
-/* Include [contenteditable="true"] to match line 538's specificity */
+/* Include [contenteditable="true"] to match specificity */
 #grid-body td.ai-highlight-duplicate,
 #grid-body td[contenteditable="true"].ai-highlight-duplicate,
 table td.ai-highlight-duplicate {
-    background-color: #ffe8a1 !important; /* Continuous translucent yellow */
+    background-color: #ffe8a1 !important;
     border-top: 1px solid #e6c200 !important;
     border-bottom: 1px solid #e6c200 !important;
 }
@@ -519,10 +519,10 @@ table td.ai-highlight-duplicate {
     border-left: 3px solid #f59e0b !important;
 }
 
-/* Missing cell audit highlight (faint red background + clear red border) */
+/* Missing cell audit highlight */
 #grid-body td.ai-highlight-missing,
 #grid-body td[contenteditable="true"].ai-highlight-missing {
-    background-color: rgba(220, 53, 69, 0.08) !important;
+    background-color: #f8d7da !important; /* Solid light red for high visibility */
     border: 1px dashed #dc3545 !important;
 }
 
@@ -530,19 +530,28 @@ table td.ai-highlight-duplicate {
 #grid-header th.ai-highlight-add,
 #grid-body td.ai-highlight-add,
 #grid-body td[contenteditable="true"].ai-highlight-add {
-    background-color: rgba(40, 167, 69, 0.18) !important;
-    border-top: 1px dashed #28a745 !important;
-    border-bottom: 1px dashed #28a745 !important;
+    background-color: #d4edda !important; /* Solid light green */
+    border: 1px dashed #28a745 !important;
+    color: #155724 !important;
 }
 
-/* Red preview for dropped column (header + cells) */
+/* Red preview for dropped column / duplicate row deletion (header + cells) */
 #grid-header th.ai-highlight-remove,
 #grid-body td.ai-highlight-remove,
 #grid-body td[contenteditable="true"].ai-highlight-remove {
-    background-color: rgba(220, 53, 69, 0.18) !important;
+    background-color: #f8d7da !important; /* Solid light red */
     border-top: 1px dashed #dc3545 !important;
     border-bottom: 1px dashed #dc3545 !important;
-    text-decoration: line-through;
+    color: #721c24 !important;
+    text-decoration: line-through !important;
+}
+
+/* Add left and right borders to the ends of highlighted rows */
+#grid-body td.ai-highlight-remove:first-child {
+    border-left: 2px solid #dc3545 !important;
+}
+#grid-body td.ai-highlight-remove:last-child {
+    border-right: 2px solid #dc3545 !important;
 }
 
 /* Diff wrapper tags inside cells: [old] -> [new] */
@@ -1217,6 +1226,7 @@ mark.search-match {
 /* ==========================================
    CONSOLE BODY & SYNTAX COLORING
    ========================================== */
+
 .terminal-body {
     flex: 1;
     background-color: #0a0a0a;
@@ -1236,10 +1246,10 @@ mark.search-match {
     border-bottom: 1px solid rgba(255, 255, 255, 0.03);
 }
 
-.log-timestamp  { color: #6a9955; }
-.log-level-info { color: #569cd6; font-weight: 600; }
-.sql-keyword    { color: #c586c0; }
-.sql-table      { color: #4ec9b0; }
-.sql-string     { color: #ce9178; }
-.sql-number     { color: #b5cea8; }
+.log-timestamp  { color: #6a9955; } /* Olive Sage Green */
+.log-level-info { color: #569cd6; font-weight: 600; } /* Cyan Blue */
+.sql-keyword    { color: #c586c0; } /* Purple Keyword */
+.sql-table      { color: #4ec9b0; } /* Mint Teal for "Table" / "Column" */
+.sql-string     { color: #ce9178; } /* Light Orange/Brown for 'strings' */
+.sql-number     { color: #b5cea8; } /* Pale Green for numbers */
 .system-msg     { color: #707070; font-style: italic; }
