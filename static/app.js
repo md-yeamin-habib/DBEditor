@@ -253,8 +253,6 @@ document.addEventListener('DOMContentLoaded', () => {
         attachEventListeners();
     }
 
-    let stagedPayload = null;
-
     async function sendAIQuery(queryText) {
         try {
             const response = await fetch('/api/ai/query', {
@@ -312,53 +310,212 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function confirmAIAction(accepted) {
-        clearConfirmationButtons();
+    // Global AI Staging Variable
+let stagedPayload = null;
 
-        if (!stagedPayload && accepted) {
-            console.warn('No staged payload available to confirm.');
-            return;
+/**
+ * Confirms or cancels a staged AI action with the backend.
+ */
+async function confirmAIAction(accepted) {
+    clearConfirmationButtons();
+
+    if (!stagedPayload && accepted) {
+        console.warn('No staged payload available to confirm.');
+        return;
+    }
+
+    const payloadToSend = stagedPayload;
+    stagedPayload = null;
+
+    try {
+        const response = await fetch('/api/ai/confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                payload: payloadToSend,
+                accepted: accepted
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Server status ${response.status}`);
         }
 
-        const payloadToSend = stagedPayload;
-        stagedPayload = null;
+        const data = await response.json();
 
-        try {
-            const response = await fetch('/api/ai/confirm', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    payload: payloadToSend,
-                    accepted: accepted
-                })
-            });
+        // Clear existing staged visual previews/highlights
+        clearAIHighlights();
 
-            if (!response.ok) {
-                throw new Error(`Server status ${response.status}`);
-            }
+        if (data.message) {
+            renderChatMessage(data.message, 'bot');
+        }
 
-            const data = await response.json();
+        // Execute returned post-confirmation actions
+        if (data.actions && Array.isArray(data.actions)) {
+            await executeAIActions(data.actions);
+        }
 
-            if (data.message) {
-                renderChatMessage(data.message, 'bot');
-            }
+        // ALWAYS refresh the grid if accepted to load fresh SQLite state
+        if (accepted && !data.actions?.some(a => a.type === 'SWITCH_TABLE')) {
+            await refreshWorkspaceGrid();
+        }
+    } catch (error) {
+        console.error('Error confirming action:', error);
+        renderChatMessage(`⚠️ Error confirming action: ${error.message}`, 'bot');
+    }
+}
 
-            // Execute any non-refresh actions first (e.g. highlighting, table list updates)
-            if (data.actions && Array.isArray(data.actions)) {
-                executeAIActions(data.actions);
-            }
+/**
+ * Cancels active staged action and cleans up UI highlights/buttons.
+ */
+function cancelStagedAction() {
+    stagedPayload = null;
+    clearConfirmationButtons();
+    clearAIHighlights();
+    renderChatMessage('Cancelled the staged action.', 'bot');
+}
 
-            // ALWAYS refresh the grid if accepted to load fresh SQLite state
-            if (accepted) {
-                await refreshWorkspaceGrid();
-            }
-        } catch (error) {
-            console.error('Error confirming action:', error);
-            renderChatMessage(`⚠️ Error confirming action: ${error.message}`, 'bot');
+/**
+ * Renders Confirm / Cancel action buttons in the chat interface.
+ */
+function renderConfirmationButtons() {
+    clearConfirmationButtons(); // Prevent duplicate button containers
+
+    const chatBox = document.getElementById('chat-messages') || document.getElementById('chatBox');
+    if (!chatBox) return;
+
+    const btnContainer = document.createElement('div');
+    btnContainer.id = 'ai-confirmation-container';
+    btnContainer.className = 'ai-confirm-box flex gap-2 my-2 p-2 bg-slate-800 rounded-lg border border-slate-700';
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-medium transition';
+    confirmBtn.textContent = '✓ Confirm Action';
+    confirmBtn.onclick = () => confirmAIAction(true);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-sm font-medium transition';
+    cancelBtn.textContent = '✕ Cancel (ESC)';
+    cancelBtn.onclick = () => confirmAIAction(false);
+
+    btnContainer.appendChild(confirmBtn);
+    btnContainer.appendChild(cancelBtn);
+    chatBox.appendChild(btnContainer);
+    chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+    function clearConfirmationButtons() {
+        const container = document.getElementById('ai-confirmation-container');
+        if (container) {
+            container.remove();
         }
     }
 
-    async function executeAIActions(actions) {
+    function highlightDuplicatesClientSide() {
+        if (!gridBody) return;
+
+        clearAIHighlights();
+        let maxTableCol = -1;
+        const headerCells = document.querySelectorAll('#grid-header th[data-col], #grid-body tr:first-child td[data-col]');
+        headerCells.forEach(th => {
+            const text = th.textContent.replace(/[▲▼↕]/g, '').trim();
+            const colIdx = parseInt(th.getAttribute('data-col'), 10);
+            if (text && !isNaN(colIdx)) {
+                maxTableCol = Math.max(maxTableCol, colIdx);
+            }
+        });
+
+        const rowsMap = new Map();
+        const dataCells = gridBody.querySelectorAll('td[data-row][data-col]');
+
+        dataCells.forEach(cell => {
+            const colIdx = parseInt(cell.getAttribute('data-col'), 10);
+            if (maxTableCol >= 0 && colIdx > maxTableCol) return;
+
+            const rowNum = cell.getAttribute('data-row');
+            if (!rowsMap.has(rowNum)) {
+                rowsMap.set(rowNum, []);
+            }   
+            rowsMap.get(rowNum).push(cell);
+        });
+
+        const rowSignatureMap = new Map();
+
+        rowsMap.forEach((cells, rowNum) => {
+            cells.sort((a, b) => parseInt(a.getAttribute('data-col'), 10) - parseInt(b.getAttribute('data-col'), 10));
+
+            const rowValues = cells.map(cell => {
+                const clone = cell.cloneNode(true);
+                clone.querySelectorAll('button, .sortBtn, .action-btn').forEach(btn => btn.remove());
+                return clone.textContent.trim();
+            });
+
+            // Skip completely blank rows
+            if (rowValues.every(val => val === '')) return;
+
+            const rowSignature = rowValues.join(' | ');
+
+            if (!rowSignatureMap.has(rowSignature)) {
+                rowSignatureMap.set(rowSignature, []);
+            }
+            rowSignatureMap.get(rowSignature).push(rowNum);
+        });
+
+        rowSignatureMap.forEach((duplicateRowNums) => {
+            if (duplicateRowNums.length > 1) {
+                duplicateRowNums.forEach(rowNum => {
+                    const cells = rowsMap.get(rowNum);
+                    if (cells) {
+                        cells.forEach(cell => cell.classList.add('ai-highlight-duplicate'));
+                    }
+                });
+            }
+        });
+    }
+
+
+    function clearAIHighlights() {
+        if (!gridBody) return;
+
+        // Clear header highlights
+        const gridHeader = document.getElementById('grid-header');
+        if (gridHeader) {
+            gridHeader.querySelectorAll('.ai-highlight-add, .ai-highlight-remove').forEach(th => {
+                th.classList.remove('ai-highlight-add', 'ai-highlight-remove');
+            });
+        }
+
+        // Clear body highlights and restore modified diff/fill innerHTML
+        gridBody.querySelectorAll('.ai-highlight-duplicate, .ai-highlight-add, .ai-highlight-remove, .ai-highlight-diff, .ai-highlight-missing').forEach(cell => {
+            cell.classList.remove('ai-highlight-duplicate', 'ai-highlight-add', 'ai-highlight-remove', 'ai-highlight-diff', 'ai-highlight-missing');
+
+            // Restore original stored text if diff badge was applied
+            if (cell.dataset.origText !== undefined) {
+                cell.textContent = cell.dataset.origText;
+                delete cell.dataset.origText;
+            }
+        });
+
+        // Clear row-level deletion styling
+        gridBody.querySelectorAll('tr.ai-highlight-remove').forEach(tr => tr.classList.remove('ai-highlight-remove'));
+
+        if (typeof autoFitColumnWidth === 'function') {
+            autoFitColumnWidth();
+        }
+    }
+
+    // Global ESC key listener to cancel previews & clear highlights
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            if (typeof cancelStagedAction === 'function') {
+                cancelStagedAction(); // Clears staged payload & highlights
+            } else {
+                clearAIHighlights();
+            }
+        }
+    });
+
+    async function executeAIActions(actions) {  
         if (!Array.isArray(actions)) return;
 
         for (const action of actions) {
@@ -366,17 +523,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 case 'STAGED_CONFIRMATION':
                     stagedPayload = action.payload;
                     renderConfirmationButtons();
+
+                    // Apply preview highlights attached to staged actions
+                    if (action.highlights) {
+                        applyStagedPreviewHighlights(action.highlights);
+                    }
                     break;
 
                 case 'HIGHLIGHT_DUPLICATES':
-                    // Handles highlighting duplicate rows returned by AI duplicate detection
-                    if (action.rowids && typeof highlightDuplicateRows === 'function') {
-                        highlightDuplicateRows(action.rowids);
-                    } else if (action.rowids && typeof applyRowHighlights === 'function') {
-                        applyRowHighlights(action.rowids, 'duplicate-row');
-                    } else {
-                        console.warn('Duplicate rowids received, but no highlight handler function found:', action.rowids);
-                    }
+                    highlightDuplicatesClientSide();
+                    break;
+
+                case 'HIGHLIGHT_MISSING':
+                    highlightMissingCellsClientSide(action.column);
+                    break;
+
+                case 'CLEAR_HIGHLIGHTS':
+                    clearAIHighlights();
                     break;
 
                 case 'REFRESH_TABLE_LIST':
@@ -386,19 +549,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     break;
 
                 case 'REFRESH_TABLE':
-                    // Avoid redundant grid re-renders if confirmAIAction already handles refresh
                     await refreshWorkspaceGrid();
                     break;
 
                 case 'SWITCH_TABLE':
+                case 'CREATE_TABLE':
+                case 'DELETE_TABLE':
                     const targetTable = action.table_name || action.active_table;
-                    if (targetTable) {
-                        if (typeof fetchTableList === 'function') {
-                            await fetchTableList();
-                        }
-                        if (typeof switchActiveTable === 'function') {
-                            await switchActiveTable(targetTable);
-                        }
+                    if (typeof fetchTableList === 'function') await fetchTableList();
+                
+                    if (targetTable && typeof switchActiveTable === 'function') {
+                        await switchActiveTable(targetTable);
                     } else {
                         await refreshWorkspaceGrid();
                     }
@@ -408,6 +569,286 @@ document.addEventListener('DOMContentLoaded', () => {
                     console.log('Unhandled AI action type:', action.type);
                     break;
             }
+        }
+
+        if (typeof setDirty === 'function') setDirty(true);
+    }
+
+    function applyStagedPreviewHighlights(highlights) {
+        clearAIHighlights();
+
+        if (!highlights) return;
+
+        // ------------------------------------------------------------------
+        // 1. Column Additions & Removals Preview
+        // ------------------------------------------------------------------
+        if (highlights.added_columns || highlights.removed_columns) {
+            const addedCols = highlights.added_columns || [];
+            const removedCols = highlights.removed_columns || [];
+
+            const headerThs = document.querySelectorAll('#grid-header th[data-col], #grid-header td[data-col]');
+
+            // A. Handle Column Removals
+            if (removedCols.length > 0) {
+                headerThs.forEach(th => {
+                    const colName = th.textContent.replace(/[▲▼↕]/g, '').trim().toLowerCase();
+                    const colIdx = th.getAttribute('data-col');
+
+                    const isMatch = removedCols.some(c => c.trim().toLowerCase() === colName);
+                    if (isMatch) {
+                        th.classList.add('ai-highlight-remove');
+                        gridBody.querySelectorAll(`td[data-col="${colIdx}"]`).forEach(td => td.classList.add('ai-highlight-remove'));
+                    }
+                });
+            }
+
+            // B. Handle Column Additions (Highlight rightmost edge / new column placement)
+            if (addedCols.length > 0) {
+                let maxColIdx = -1;
+                headerThs.forEach(th => {
+                    const colIdx = parseInt(th.getAttribute('data-col'), 10);
+                    if (!isNaN(colIdx)) maxColIdx = Math.max(maxColIdx, colIdx);
+                });
+
+                // Highlight existing column headers matching added names OR the next column target
+                addedCols.forEach(newColName => {
+                    let matched = false;
+                    headerThs.forEach(th => {
+                        const colName = th.textContent.replace(/[▲▼↕]/g, '').trim().toLowerCase();
+                        if (colName === newColName.trim().toLowerCase()) {
+                            const colIdx = th.getAttribute('data-col');
+                            th.classList.add('ai-highlight-add');
+                            gridBody.querySelectorAll(`td[data-col="${colIdx}"]`).forEach(td => td.classList.add('ai-highlight-add'));
+                            matched = true;
+                        }
+                    });
+
+                    // If column doesn't exist in DOM yet, highlight the last column border/header as target area
+                    if (!matched && maxColIdx >= 0) {
+                        const lastHeader = document.querySelector(`#grid-header [data-col="${maxColIdx}"]`);
+                        if (lastHeader) lastHeader.classList.add('ai-highlight-add');
+                        gridBody.querySelectorAll(`td[data-col="${maxColIdx}"]`).forEach(td => td.classList.add('ai-highlight-add'));
+                    }
+                });
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // 2. Row Deletions & Duplicate Removal Preview
+        // ------------------------------------------------------------------
+        // Handles payload variants: removed_rows, duplicate_rows, row_indices, or rows
+        const rowsToDelete = highlights.removed_rows || highlights.duplicate_rows || highlights.row_indices || highlights.rows;
+        if (rowsToDelete && Array.isArray(rowsToDelete) && rowsToDelete.length > 0) {
+            highlightRowsForDeletion(rowsToDelete);
+        } else if (highlights.action_type === 'REMOVE_DUPLICATES' || highlights.type === 'HIGHLIGHT_DUPLICATES') {
+            // Fallback: If no explicit row array is given, trigger client-side duplicate detection preview
+            highlightDuplicatesForDeletion();
+        }
+
+        // ------------------------------------------------------------------
+        // 3. Fill Missing Values Preview
+        // ------------------------------------------------------------------
+        if (highlights.fill_preview) {
+            const targetColName = highlights.fill_preview.column;
+            const fillValue = highlights.fill_preview.fill_value;
+
+            let maxTableCol = -1;
+            let targetColIdx = -1;
+            const headerCells = document.querySelectorAll('#grid-header th[data-col], #grid-body tr:first-child td[data-col]');
+
+            headerCells.forEach(th => {
+                const colText = th.textContent.replace(/[▲▼↕]/g, '').trim();
+                const colIdx = parseInt(th.getAttribute('data-col'), 10);
+
+                if (colText && !isNaN(colIdx)) {
+                    maxTableCol = Math.max(maxTableCol, colIdx);
+                    if (targetColName && targetColName !== "ALL_COLUMNS" && colText.toLowerCase() === targetColName.toLowerCase()) {
+                        targetColIdx = colIdx;
+                    }
+                }
+            });
+
+            let maxTableRow = -1;
+            const allCells = gridBody.querySelectorAll('td[data-row][data-col]');
+
+            allCells.forEach(cell => {
+                const colIdx = parseInt(cell.getAttribute('data-col'), 10);
+                const rowIdx = parseInt(cell.getAttribute('data-row'), 10);
+
+                if (colIdx <= maxTableCol && cell.textContent.trim() !== '') {
+                    maxTableRow = Math.max(maxTableRow, rowIdx);
+                }
+            });
+
+            allCells.forEach(cell => {
+                const colIdx = parseInt(cell.getAttribute('data-col'), 10);
+                const rowIdx = parseInt(cell.getAttribute('data-row'), 10);
+
+                if (rowIdx > maxTableRow || colIdx > maxTableCol) return;
+                if (targetColIdx >= 0 && colIdx !== targetColIdx) return;
+
+                const text = cell.textContent.trim();
+                if (text === '' || text === 'N/A' || text === 'null') {
+                    cell.dataset.origText = cell.textContent;
+                    cell.innerHTML = `<span class="fill-preview-badge">${fillValue}</span>`;
+                    cell.classList.add('ai-highlight-add');
+                }
+            });
+        }
+
+        // ------------------------------------------------------------------
+        // 4. Cell Diffs Preview: [old] -> [new]
+        // ------------------------------------------------------------------
+        if (highlights.cell_diffs && Array.isArray(highlights.cell_diffs)) {
+            highlights.cell_diffs.forEach(diff => {
+                const oldVal = String(diff.old_val).trim();
+                const newVal = String(diff.new_val).trim();
+
+                const cells = gridBody.querySelectorAll('td[data-row][data-col]');
+                cells.forEach(cell => {
+                    const text = cell.textContent.trim();
+                    if (text === oldVal) {
+                        cell.dataset.origText = cell.textContent;
+                        cell.innerHTML = `<div class="diff-container"><span class="diff-old">${oldVal}</span><span class="diff-arrow">&rarr;</span><span class="diff-new">${newVal}</span></div>`;
+                        cell.classList.add('ai-highlight-diff');
+                    }
+                });
+            });
+        }
+
+        if (typeof autoFitColumnWidth === 'function') {
+            autoFitColumnWidth();
+        }
+    }
+
+    function highlightRowsForDeletion(rowIndices) {
+        if (!gridBody || !Array.isArray(rowIndices)) return;
+
+        rowIndices.forEach(idx => {
+            // Method A: Look up cells with matching data-row attribute
+            const targetCells = gridBody.querySelectorAll(`td[data-row="${idx}"]`);
+            if (targetCells.length > 0) {
+                targetCells.forEach(td => td.classList.add('ai-highlight-remove'));
+                const parentRow = targetCells[0].closest('tr');
+                if (parentRow) parentRow.classList.add('ai-highlight-remove');
+                return;
+            }
+
+            // Method B: Fallback to DOM row index if data-row isn't directly matched
+            const trs = gridBody.querySelectorAll('tr');
+            if (trs[idx]) {
+                trs[idx].classList.add('ai-highlight-remove');
+                trs[idx].querySelectorAll('td').forEach(td => td.classList.add('ai-highlight-remove'));
+            }
+        });
+    }   
+
+    function highlightDuplicatesForDeletion() {
+        if (!gridBody) return;
+
+        let maxTableCol = -1;
+        const headerCells = document.querySelectorAll('#grid-header th[data-col], #grid-body tr:first-child td[data-col]');
+        headerCells.forEach(th => {
+            const text = th.textContent.replace(/[▲▼↕]/g, '').trim();
+            const colIdx = parseInt(th.getAttribute('data-col'), 10);
+            if (text && !isNaN(colIdx)) maxTableCol = Math.max(maxTableCol, colIdx);
+        });
+
+        const rowsMap = new Map();
+        const dataCells = gridBody.querySelectorAll('td[data-row][data-col]');
+
+        dataCells.forEach(cell => {
+            const colIdx = parseInt(cell.getAttribute('data-col'), 10);
+            if (maxTableCol >= 0 && colIdx > maxTableCol) return;
+
+            const rowNum = cell.getAttribute('data-row');
+            if (!rowsMap.has(rowNum)) rowsMap.set(rowNum, []);
+            rowsMap.get(rowNum).push(cell);
+        });
+
+        const rowSignatureMap = new Map();
+
+        rowsMap.forEach((cells, rowNum) => {
+            cells.sort((a, b) => parseInt(a.getAttribute('data-col'), 10) - parseInt(b.getAttribute('data-col'), 10));
+
+            const rowValues = cells.map(cell => {
+                const clone = cell.cloneNode(true);
+                clone.querySelectorAll('button, .sortBtn, .action-btn').forEach(btn => btn.remove());
+                return clone.textContent.trim();
+            });
+
+            if (rowValues.every(val => val === '')) return;
+
+            const rowSignature = rowValues.join(' | ');
+
+            if (!rowSignatureMap.has(rowSignature)) {
+                rowSignatureMap.set(rowSignature, []);
+            }
+            rowSignatureMap.get(rowSignature).push(rowNum);
+        });
+
+        // Mark 2nd+ occurrences as targeted for deletion (.ai-highlight-remove)
+        rowSignatureMap.forEach((duplicateRowNums) => {
+            if (duplicateRowNums.length > 1) {
+                // Keep index 0, mark index 1+ for deletion preview
+                duplicateRowNums.slice(1).forEach(rowNum => {
+                    const cells = rowsMap.get(rowNum);
+                    if (cells) {
+                        cells.forEach(cell => cell.classList.add('ai-highlight-remove'));
+                        const tr = cells[0].closest('tr');
+                        if (tr) tr.classList.add('ai-highlight-remove');
+                    }
+                });
+            }
+        });
+    }
+
+    function highlightMissingCellsClientSide(targetColumn) {
+        clearAIHighlights();
+
+        let maxTableCol = -1;
+        let targetColIdx = -1;
+        const headerCells = document.querySelectorAll('#grid-header th[data-col], #grid-body tr:first-child td[data-col]');
+
+        headerCells.forEach(th => {
+            const colText = th.textContent.replace(/[▲▼↕]/g, '').trim();
+            const colIdx = parseInt(th.getAttribute('data-col'), 10);
+
+            if (colText && !isNaN(colIdx)) {
+                maxTableCol = Math.max(maxTableCol, colIdx);
+                if (targetColumn && targetColumn !== "ALL_COLUMNS" && colText.toLowerCase() === String(targetColumn).toLowerCase()) {
+                    targetColIdx = colIdx;
+                }
+            }
+        });
+
+        let maxTableRow = -1;
+        const allCells = gridBody.querySelectorAll('td[data-row][data-col]');
+
+        allCells.forEach(cell => {
+            const colIdx = parseInt(cell.getAttribute('data-col'), 10);
+            const rowIdx = parseInt(cell.getAttribute('data-row'), 10);
+
+            if (colIdx <= maxTableCol && cell.textContent.trim() !== '') {
+                maxTableRow = Math.max(maxTableRow, rowIdx);
+            }
+        });
+
+        allCells.forEach(cell => {
+            const colIdx = parseInt(cell.getAttribute('data-col'), 10);
+            const rowIdx = parseInt(cell.getAttribute('data-row'), 10);
+
+            if (rowIdx > maxTableRow || colIdx > maxTableCol) return;
+            if (targetColIdx >= 0 && colIdx !== targetColIdx) return;
+
+            const text = cell.textContent.trim();
+            if (text === '' || text === 'N/A' || text === 'null') {
+                cell.classList.add('ai-highlight-missing');
+            }
+        });
+
+        if (typeof autoFitColumnWidth === 'function') {
+            autoFitColumnWidth();
         }
     }
 
@@ -482,12 +923,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const acceptBtn = document.createElement('button');
         acceptBtn.className = 'btn btn-accept';
         acceptBtn.textContent = 'Accept Changes';
-        acceptBtn.addEventListener('click', () => confirmAIAction(true));
+        acceptBtn.addEventListener('click', () => {
+            confirmAIAction(true);
+            clearAIHighlights();
+        })
 
         const cancelBtn = document.createElement('button');
         cancelBtn.className = 'btn btn-cancel';
         cancelBtn.textContent = 'Cancel';
-        cancelBtn.addEventListener('click', () => confirmAIAction(false));
+        cancelBtn.addEventListener('click', () => {
+            confirmAIAction(false);
+            clearAIHighlights();
+        });
 
         btnGroup.appendChild(acceptBtn);
         btnGroup.appendChild(cancelBtn);
@@ -1885,21 +2332,46 @@ document.addEventListener('DOMContentLoaded', () => {
     }
  
 
-
     function sanitizeTablesData() {
-    if (!activeTable || !tablesData[activeTable]) return;
+        if (!activeTable || !tablesData[activeTable]) return;
 
-    const table = tablesData[activeTable];
-    if (!table || !Array.isArray(table.rows)) return;
+        const table = tablesData[activeTable];
+        if (!table || !Array.isArray(table.rows) || !Array.isArray(table.columns)) return;
 
-    // Filter empty rows only within the current page scope
-    table.rows = table.rows.filter(row => 
-        Array.isArray(row) && row.some(cell => cell !== undefined && String(cell).trim() !== '')
-    );
+        // 1. Filter out completely empty rows
+        table.rows = table.rows.filter(row => 
+            Array.isArray(row) && row.some(cell => cell !== undefined && cell !== null && String(cell).trim() !== '')
+        );
 
-    // Sync only the current page view back to the staging table on backend
-    syncActiveTableToBackend();
-}
+        // 2. Identify active column indices (columns that have a header OR cell data)
+        const activeColIndices = [];
+        const maxCols = Math.max(table.columns.length, ...table.rows.map(r => (Array.isArray(r) ? r.length : 0)));
+
+        for (let c = 0; c < maxCols; c++) {
+            const colHeaderHasValue = table.columns[c] && String(table.columns[c]).trim() !== '';
+            const colDataHasValue = table.rows.some(r => r[c] !== undefined && r[c] !== null && String(r[c]).trim() !== '');
+
+            // Retain column index if it has either a valid header or valid data cell
+            if (colHeaderHasValue || colDataHasValue) {
+                activeColIndices.push(c);
+            }
+        }
+
+        // 3. Re-index and prune empty column gaps
+        table.columns = activeColIndices.map((cIdx, i) => {
+            const header = table.columns[cIdx];
+            return header && String(header).trim() !== '' ? String(header).trim() : `Column_${i + 1}`;
+        });
+
+        table.rows = table.rows.map(row => 
+            activeColIndices.map(cIdx => (row[cIdx] !== undefined && row[cIdx] !== null ? row[cIdx] : ''))
+        );
+
+        // 4. Sync cleaned active table back to backend staging
+        if (typeof syncActiveTableToBackend === 'function') {
+            syncActiveTableToBackend();
+        }
+    }
 
     async function saveDatabase() {
         // 1. Sync current page edits to server first
