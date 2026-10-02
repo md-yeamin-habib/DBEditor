@@ -1275,19 +1275,23 @@ document.addEventListener('DOMContentLoaded', () => {
         if (index < 0 || index >= searchMatches.length) return;
         const match = searchMatches[index];
 
-        const targetPage = match.page || Math.ceil(match.row / pageSize) || 1;
+        const targetPage = match.page || 1;
 
         if (match.table !== activeTable || targetPage !== currentPage) {
             activeTable = match.table;
-            await loadPageData(activeTable, targetPage);
+            await loadPageData(activeTable, targetPage); 
             renderTabs();
-            renderGrid();
+        } else {
+            applyCurrentTableHighlights();
         }
 
-        applyCurrentTableHighlights();
+        // Clear previous active highlights
         gridBody.querySelectorAll('mark.active-match').forEach(m => m.classList.remove('active-match'));
 
-        const cell = gridBody.querySelector(`td[data-row="${match.row}"][data-col="${match.col}"]`);
+        // Convert relative row to absolute row index to match DOM data-row
+        const absoluteRow = ((currentPage - 1) * pageSize) + match.row;
+
+        const cell = gridBody.querySelector(`td[data-row="${absoluteRow}"][data-col="${match.col}"]`);
         if (cell) {
             clearSelections();
             cell.classList.add('cell-selected', 'sel-top', 'sel-bottom', 'sel-left', 'sel-right');
@@ -1296,7 +1300,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (activeMark) activeMark.classList.add('active-match');
 
             cell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-            updateCoordinateDisplay(match.row, match.col);
+            if (typeof updateCoordinateDisplay === 'function') {
+                updateCoordinateDisplay(absoluteRow, match.col);
+            }
         }
 
         if (searchMatchStatus) {
@@ -1319,10 +1325,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isMatchWord) patternString = `\\b${patternString}\\b`;
 
         const searchRegex = new RegExp(`(${patternString})`, regexFlags);
-        const currentTableMatches = searchMatches.filter(m => m.table === activeTable);
 
-        currentTableMatches.forEach(match => {
-            const cell = gridBody.querySelector(`td[data-row="${match.row}"][data-col="${match.col}"]`);
+        const currentPageMatches = searchMatches.filter(
+            m => m.table === activeTable && (m.page || 1) === currentPage
+        );
+
+        const startRowOffset = (currentPage - 1) * pageSize;
+
+        currentPageMatches.forEach(match => {
+            const absoluteRow = startRowOffset + match.row;
+
+            const cell = gridBody.querySelector(`td[data-row="${absoluteRow}"][data-col="${match.col}"]`);
             if (cell) {
                 const cleanText = cell.innerText;
                 cell.innerHTML = cleanText.replace(searchRegex, '<mark class="search-match">$1</mark>');
