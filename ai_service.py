@@ -275,7 +275,7 @@ class AIService:
 
             msg = (
                 f"**Proposed Action:** Remove **{len(duplicate_ids)} duplicate row(s)** from `{table_name}`.\n"
-                f"Duplicate rows will be highlighted in **Red**.\n\n"
+                f"Duplicate rows scheduled for removal are highlighted in **Red**.\n\n"
                 f"Accept or Cancel changes?"
             )
 
@@ -317,10 +317,10 @@ class AIService:
                 source_cols = matched_cols
             elif top_n_match:
                 n = int(top_n_match.group(1))
-                numeric_cols = [c for c in existing_cols if any(k in c.lower() for k in ["marks", "mathematics", "science", "english", "physics", "chemistry", "biology", "history", "geography", "score"])]
+                numeric_cols = [c for c in existing_cols if any(k in c.lower() for k in ["marks", "mathematics", "english", "physics", "chemistry", "biology", "history", "geography", "score"])]
                 source_cols = numeric_cols[:n] if numeric_cols else existing_cols[:n]
             else:
-                source_cols = [c for c in existing_cols if any(k in c.lower() for k in ["marks", "mathematics", "science", "english", "physics", "chemistry", "biology", "history", "geography", "score"])]
+                source_cols = [c for c in existing_cols if any(k in c.lower() for k in ["marks", "mathematics", "english", "physics", "chemistry", "biology", "history", "geography", "score"])]
 
             if not source_cols:
                 return {"message": f"Could not determine valid subject columns to average in `{table_name}`.", "actions": []}
@@ -458,7 +458,10 @@ class AIService:
                         "fill_value": fill_value
                     },
                     "highlights": {
-                        "patched_column": target_col
+                        "fill_preview": {
+                            "column": target_col,
+                            "fill_value": fill_value
+                        }
                     }
                 }]
             }
@@ -648,6 +651,9 @@ class AIService:
                 cursor.execute(f'SELECT COUNT(*) FROM "{table_name}" WHERE "{col}" IS NULL OR "{col}" = "" OR TRIM(CAST("{col}" AS TEXT)) = "";')
                 total_missing += cursor.fetchone()[0]
 
-            return {"message": f"Audit for `{table_name}`: Found **{total_missing}** missing/empty cells.", "actions": []}
+            return {
+                "message": f"Audit for `{table_name}`: Found **{total_missing}** missing/empty cells.",
+                "actions": [{"type": "HIGHLIGHT_MISSING"}]
+            }
         finally:
             conn.close()
