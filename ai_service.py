@@ -25,7 +25,13 @@ class AIService:
     def process_query(self, query_text: str, active_table: str = "Table1") -> dict:
         query_lower = query_text.lower()
 
-        if any(kw in query_lower for kw in ["average of", "avg of", "top", "merge columns", "replace with average"]):
+        if any(kw in query_lower for kw in ["round off", "round values", "round integers", "round column", "round"]):
+            return self._stage_round_values(active_table, query_text)
+
+        elif any(kw in query_lower for kw in ["truncate", "error margin", "margin of error", "remove error", "strip margin", "+-", "±"]):
+            return self._stage_truncate_margin_of_error(active_table, query_text)
+
+        elif any(kw in query_lower for kw in ["average of", "avg of", "top", "merge columns", "replace with average"]):
             return self._handle_subject_average(active_table, query_text)
 
         elif any(kw in query_lower for kw in ["change", "update", "replace value", "set"]):
@@ -61,6 +67,7 @@ class AIService:
                 "actions": []
             }
 
+    
     def confirm_action(self, action_payload: dict) -> dict:
         action_type = action_payload.get("action_type")
         table_name = action_payload.get("table_name")
@@ -69,7 +76,19 @@ class AIService:
         cursor = conn.cursor()
 
         try:
-            if action_type == "REMOVE_DUPLICATES":
+            if action_type == "ROUND_COLUMN":
+                target_col = action_payload.get("column")
+                self._execute_round_column(cursor, table_name, target_col)
+                conn.commit()
+                msg = f"Successfully rounded all numeric values in `{target_col}` for `{table_name}`."
+
+            elif action_type == "TRUNCATE_ERROR_MARGIN":
+                diffs = action_payload.get("diffs", [])
+                self._execute_truncate_error_margin(cursor, table_name, diffs)
+                conn.commit()
+                msg = f"Successfully removed margins of error from values in `{table_name}`."
+
+            elif action_type == "REMOVE_DUPLICATES":    
                 user_cols = self._get_user_columns_for_duplicates(cursor, table_name)
                 if not user_cols:
                     return {"message": "No data columns found to remove duplicates.", "actions": []}
@@ -186,7 +205,7 @@ class AIService:
                 clean_col = f'CAST(REPLACE(REPLACE("{target_col}", "$", ""), ",", "") AS REAL)'
                 rank_update_sql = f"""
                     WITH Ranked AS (
-                        SELECT _rowid_ as rid, RANK() OVER (ORDER BY {clean_col} DESC) as computed_rank
+                        SELECT _rowid_ as rid, DENSE_RANK() OVER (ORDER BY {clean_col} DESC) as computed_rank
                         FROM "{table_name}"
                     )
                     UPDATE "{table_name}"
@@ -657,3 +676,184 @@ class AIService:
             }
         finally:
             conn.close()
+
+    def _stage_round_values(self, table_name: str, query_text: str) -> dict:
+        """Stages a rounding action for floating point numbers in the target column."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute(f'PRAGMA table_info("{table_name}");')
+            columns = [info[1] for info in cursor.fetchall()]
+
+            # Match target column explicitly from query
+            target_col = next((c for c in columns if c.lower() in query_text.lower() and c.lower() not in ["id", "rowid"]), None)
+
+            # Fallback to first numeric-sounding or valid column
+            if not target_col:
+                for c in columns:
+                    cursor.execute(f'SELECT "{c}" FROM "{table_name}" WHERE "{c}" IS NOT NULL AND TRIM(CAST("{c}" AS TEXT)) != "" LIMIT 10;')
+                    vals = [r[0] for r in cursor.fetchall()]
+                    if any(isinstance(v, float) or (isinstance(v, str) and "." in v and v.replace(".", "", 1).isdigit()) for v in vals):
+                        target_col = c
+                        break
+
+            if not target_col:
+                return {"message": f"Could not find a numeric column to round off in `{table_name}`.", "actions": []}
+
+            # Gather preview cell diffs (e.g. 123.46 -> 123)
+            cursor.execute(f'SELECT _rowid_, "{target_col}" FROM "{table_name}" WHERE "{target_col}" IS NOT NULL;')
+            rows = cursor.fetchall()
+
+            diffs = []
+            for rowid, val in rows:
+                if val is None:
+                    continue
+                try:
+                    str_val = str(val).strip()
+                    # Strip standard currency symbols or formatting
+                    clean_str = re.sub(r'[^\d.-]', '', str_val)
+                    if not clean_str:
+                        continue
+                    
+                    float_val = float(clean_str)
+                    rounded_val = int(round(float_val))
+                    
+                    if float_val != float(rounded_val):
+                        diffs.append({
+                            "column": target_col,
+                            "old_val": str_val,
+                            "new_val": str(rounded_val)
+                        })
+                except (ValueError, TypeError):
+                    continue
+
+            if not diffs:
+                return {"message": f"No fractional or numeric values requiring rounding were found in column `{target_col}`.", "actions": []}
+
+            msg = (
+                f"**Proposed Table Action:** Round off numeric values in column **`{target_col}`**.\n"
+                f"- Sample changes staged: `{diffs[0]['old_val']}` &rarr; `{diffs[0]['new_val']}` (Total cells affected: **{len(diffs)}**)\n\n"
+                f"Confirm to apply changes?"
+            )
+
+            return {
+                "message": msg,
+                "actions": [{
+                    "type": "STAGED_CONFIRMATION",
+                    "payload": {
+                        "action_type": "ROUND_COLUMN",
+                        "table_name": table_name,
+                        "column": target_col
+                    },
+                    "highlights": {
+                        "cell_diffs": diffs
+                    }
+                }]
+            }
+        finally:
+            conn.close()
+
+    def _stage_truncate_margin_of_error(self, table_name: str, query_text: str) -> dict:
+        """Stages truncation of margin-of-error patterns like '1045.67 +- 1.456' or '100 ± 5' -> '1045.67'."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute(f'PRAGMA table_info("{table_name}");')
+            columns = [info[1] for info in cursor.fetchall()]
+
+            target_col = next((c for c in columns if c.lower() in query_text.lower()), None)
+
+            # Search across columns if target column isn't explicitly mentioned
+            search_cols = [target_col] if target_col else columns
+
+            diffs = []
+            matched_col = target_col
+
+            for col in search_cols:
+                cursor.execute(f'SELECT _rowid_, "{col}" FROM "{table_name}" WHERE "{col}" IS NOT NULL;')
+                rows = cursor.fetchall()
+
+                for rowid, val in rows:
+                    if not val:
+                        continue
+                    str_val = str(val).trim() if hasattr(str(val), 'trim') else str(val).strip()
+
+                    # Match patterns with ±, +-, or +/-
+                    match = re.search(r'^([+-]?\d+(?:\.\d+)?)\s*(?:±|\+-|\+/-)\s*\d+(?:\.\d+)?', str_val)
+                    if match:
+                        clean_base_val = match.group(1)
+                        if not matched_col:
+                            matched_col = col
+                        diffs.append({
+                            "column": col,
+                            "old_val": str_val,
+                            "new_val": clean_base_val
+                        })
+
+            if not diffs:
+                return {"message": f"No margin-of-error strings (e.g. `1045.67 +- 1.45`) found in `{table_name}`.", "actions": []}
+
+            msg = (
+                f"**Proposed Data Cleaning Action:** Remove error margins in column **`{matched_col}`**.\n"
+                f"- Sample transformation: `{diffs[0]['old_val']}` &rarr; `{diffs[0]['new_val']}` (Total cells affected: **{len(diffs)}**)\n\n"
+                f"Confirm execution?"
+            )
+
+            return {
+                "message": msg,
+                "actions": [{
+                    "type": "STAGED_CONFIRMATION",
+                    "payload": {
+                        "action_type": "TRUNCATE_ERROR_MARGIN",
+                        "table_name": table_name,
+                        "column": matched_col,
+                        "diffs": diffs
+                    },
+                    "highlights": {
+                        "cell_diffs": diffs
+                    }
+                }]
+            }
+        finally:
+            conn.close()
+
+    def _execute_round_column(self, cursor, table_name: str, target_col: str):
+        """Executes rounding directly in SQLite for the specified target column."""
+        cursor.execute(f'SELECT _rowid_, "{target_col}" FROM "{table_name}" WHERE "{target_col}" IS NOT NULL;')
+        rows = cursor.fetchall()
+
+        for rowid, val in rows:
+            if val is None:
+                continue
+            try:
+                str_val = str(val).strip()
+                clean_str = re.sub(r'[^\d.-]', '', str_val)
+                if clean_str:
+                    rounded_val = int(round(float(clean_str)))
+                    cursor.execute(
+                        f'UPDATE "{table_name}" SET "{target_col}" = ? WHERE _rowid_ = ?;',
+                        (rounded_val, rowid)
+                    )
+            except (ValueError, TypeError):
+                continue
+
+    def _execute_truncate_error_margin(self, cursor, table_name: str, diffs: list):
+        """Executes margin-of-error removal for targeted cell values."""
+        for item in diffs:
+            col = item.get("column")
+            old_val = item.get("old_val")
+            new_val = item.get("new_val")
+
+            def parse_val(v):
+                try:
+                    return int(v)
+                except (ValueError, TypeError):
+                    try:
+                        return float(v)
+                    except (ValueError, TypeError):
+                        return v
+
+            cursor.execute(
+                f'UPDATE "{table_name}" SET "{col}" = ? WHERE "{col}" = ? OR CAST("{col}" AS TEXT) = ?;',
+                (parse_val(new_val), old_val, old_val)
+            )
