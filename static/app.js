@@ -311,98 +311,89 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Global AI Staging Variable
-let stagedPayload = null;
+    let stagedPayload = null;
 
-/**
- * Confirms or cancels a staged AI action with the backend.
- */
-async function confirmAIAction(accepted) {
-    clearConfirmationButtons();
+    async function confirmAIAction(accepted) {
+        clearConfirmationButtons();
 
-    if (!stagedPayload && accepted) {
-        console.warn('No staged payload available to confirm.');
-        return;
-    }
-
-    const payloadToSend = stagedPayload;
-    stagedPayload = null;
-
-    try {
-        const response = await fetch('/api/ai/confirm', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                payload: payloadToSend,
-                accepted: accepted
-            })
-        });
-
-        if (!response.ok) {
-            throw new Error(`Server status ${response.status}`);
+        if (!stagedPayload && accepted) {
+            console.warn('No staged payload available to confirm.');
+            return;
         }
 
-        const data = await response.json();
+        const payloadToSend = stagedPayload;
+        stagedPayload = null;
 
-        // Clear existing staged visual previews/highlights
+        try {
+            const response = await fetch('/api/ai/confirm', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    payload: payloadToSend,
+                    accepted: accepted
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Server status ${response.status}`);
+            }
+
+            const data = await response.json();
+
+            // Clear existing staged visual previews/highlights
+            clearAIHighlights();
+
+            if (data.message) {
+                renderChatMessage(data.message, 'bot');
+            }
+
+            // Execute returned post-confirmation actions
+            if (data.actions && Array.isArray(data.actions)) {
+                await executeAIActions(data.actions);
+            }
+
+            // ALWAYS refresh the grid if accepted to load fresh SQLite state
+            if (accepted && !data.actions?.some(a => a.type === 'SWITCH_TABLE')) {
+                await refreshWorkspaceGrid();
+            }
+        } catch (error) {
+            console.error('Error confirming action:', error);
+            renderChatMessage(`⚠️ Error confirming action: ${error.message}`, 'bot');
+        }
+    }
+
+    function cancelStagedAction() {
+        stagedPayload = null;
+        clearConfirmationButtons();
         clearAIHighlights();
-
-        if (data.message) {
-            renderChatMessage(data.message, 'bot');
-        }
-
-        // Execute returned post-confirmation actions
-        if (data.actions && Array.isArray(data.actions)) {
-            await executeAIActions(data.actions);
-        }
-
-        // ALWAYS refresh the grid if accepted to load fresh SQLite state
-        if (accepted && !data.actions?.some(a => a.type === 'SWITCH_TABLE')) {
-            await refreshWorkspaceGrid();
-        }
-    } catch (error) {
-        console.error('Error confirming action:', error);
-        renderChatMessage(`⚠️ Error confirming action: ${error.message}`, 'bot');
+        renderChatMessage('Cancelled the staged action.', 'bot');
     }
-}
 
-/**
- * Cancels active staged action and cleans up UI highlights/buttons.
- */
-function cancelStagedAction() {
-    stagedPayload = null;
-    clearConfirmationButtons();
-    clearAIHighlights();
-    renderChatMessage('Cancelled the staged action.', 'bot');
-}
+    function renderConfirmationButtons() {
+        clearConfirmationButtons(); 
 
-/**
- * Renders Confirm / Cancel action buttons in the chat interface.
- */
-function renderConfirmationButtons() {
-    clearConfirmationButtons(); // Prevent duplicate button containers
+        const chatBox = document.getElementById('chat-messages') || document.getElementById('chatBox');
+        if (!chatBox) return;
 
-    const chatBox = document.getElementById('chat-messages') || document.getElementById('chatBox');
-    if (!chatBox) return;
+        const btnContainer = document.createElement('div');
+        btnContainer.id = 'ai-confirmation-container';
+        btnContainer.className = 'ai-confirm-box flex gap-2 my-2 p-2 bg-slate-800 rounded-lg border border-slate-700';
 
-    const btnContainer = document.createElement('div');
-    btnContainer.id = 'ai-confirmation-container';
-    btnContainer.className = 'ai-confirm-box flex gap-2 my-2 p-2 bg-slate-800 rounded-lg border border-slate-700';
+        const confirmBtn = document.createElement('button');
+        confirmBtn.className = 'px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-medium transition';
+        confirmBtn.textContent = '✓ Confirm Action';
+        confirmBtn.onclick = () => confirmAIAction(true);
 
-    const confirmBtn = document.createElement('button');
-    confirmBtn.className = 'px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-medium transition';
-    confirmBtn.textContent = '✓ Confirm Action';
-    confirmBtn.onclick = () => confirmAIAction(true);
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-sm font-medium transition';
+        cancelBtn.textContent = '✕ Cancel (ESC)';
+        cancelBtn.onclick = () => confirmAIAction(false);
 
-    const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-sm font-medium transition';
-    cancelBtn.textContent = '✕ Cancel (ESC)';
-    cancelBtn.onclick = () => confirmAIAction(false);
-
-    btnContainer.appendChild(confirmBtn);
-    btnContainer.appendChild(cancelBtn);
-    chatBox.appendChild(btnContainer);
-    chatBox.scrollTop = chatBox.scrollHeight;
-}
+        btnContainer.appendChild(confirmBtn);
+        btnContainer.appendChild(cancelBtn);
+        chatBox.appendChild(btnContainer);
+        chatBox.scrollTop = chatBox.scrollHeight;
+    }
 
     function clearConfirmationButtons() {
         const container = document.getElementById('ai-confirmation-container');
@@ -411,10 +402,12 @@ function renderConfirmationButtons() {
         }
     }
 
-    function highlightDuplicatesClientSide() {
+    function highlightDuplicatesClientSide(skipFirst = false) {
         if (!gridBody) return;
 
+        
         clearAIHighlights();
+
         let maxTableCol = -1;
         const headerCells = document.querySelectorAll('#grid-header th[data-col], #grid-body tr:first-child td[data-col]');
         headerCells.forEach(th => {
@@ -463,10 +456,12 @@ function renderConfirmationButtons() {
 
         rowSignatureMap.forEach((duplicateRowNums) => {
             if (duplicateRowNums.length > 1) {
-                duplicateRowNums.forEach(rowNum => {
+                const targetRowNums = skipFirst ? duplicateRowNums.slice(1) : duplicateRowNums;
+                const targetClass = skipFirst ? 'ai-highlight-remove' : 'ai-highlight-duplicate';
+                targetRowNums.forEach(rowNum => {
                     const cells = rowsMap.get(rowNum);
                     if (cells) {
-                        cells.forEach(cell => cell.classList.add('ai-highlight-duplicate'));
+                        cells.forEach(cell => cell.classList.add(targetClass));
                     }
                 });
             }
@@ -515,7 +510,7 @@ function renderConfirmationButtons() {
         }
     });
 
-    async function executeAIActions(actions) {  
+    async function executeAIActions(actions) {
         if (!Array.isArray(actions)) return;
 
         for (const action of actions) {
@@ -526,16 +521,21 @@ function renderConfirmationButtons() {
 
                     // Apply preview highlights attached to staged actions
                     if (action.highlights) {
-                        applyStagedPreviewHighlights(action.highlights);
+                        applyStagedPreviewHighlights(action.highlights, action.payload);
                     }
                     break;
 
                 case 'HIGHLIGHT_DUPLICATES':
-                    highlightDuplicatesClientSide();
+                    // Client-side finding & highlighting all duplicates
+                    if (typeof highlightDuplicatesClientSide === 'function') {
+                        highlightDuplicatesClientSide(false);
+                    }
                     break;
 
                 case 'HIGHLIGHT_MISSING':
-                    highlightMissingCellsClientSide(action.column);
+                    if (typeof highlightMissingCellsClientSide === 'function') {
+                        highlightMissingCellsClientSide(action.column);
+                    }
                     break;
 
                 case 'CLEAR_HIGHLIGHTS':
@@ -557,9 +557,12 @@ function renderConfirmationButtons() {
                 case 'DELETE_TABLE':
                     const targetTable = action.table_name || action.active_table;
                     if (typeof fetchTableList === 'function') await fetchTableList();
-                
-                    if (targetTable && typeof switchActiveTable === 'function') {
-                        await switchActiveTable(targetTable);
+
+                    if (targetTable) {
+                        activeTable = targetTable;
+                        if (typeof loadPageData === 'function') {
+                            await loadPageData(activeTable, 1);
+                        }
                     } else {
                         await refreshWorkspaceGrid();
                     }
@@ -574,76 +577,84 @@ function renderConfirmationButtons() {
         if (typeof setDirty === 'function') setDirty(true);
     }
 
-    function applyStagedPreviewHighlights(highlights) {
-        clearAIHighlights();
-
-        if (!highlights) return;
+    function applyStagedPreviewHighlights(highlights, actionPayload) {
+        if (!highlights && !actionPayload) return;
 
         // ------------------------------------------------------------------
-        // 1. Column Additions & Removals Preview
+        // 1. Duplicate Removal Preview
+        // ------------------------------------------------------------------
+        const isDuplicateAction = 
+            (actionPayload && actionPayload.action_type === 'REMOVE_DUPLICATES') ||
+            (highlights && (highlights.removed_rowids || highlights.action_type === 'REMOVE_DUPLICATES'));
+
+        if (isDuplicateAction) {
+            if (typeof highlightDuplicatesClientSide === 'function') {
+                highlightDuplicatesClientSide(true);
+            }
+            return;
+        }
+
+        // ------------------------------------------------------------------
+        // 2. Column Additions & Removals Preview
         // ------------------------------------------------------------------
         if (highlights.added_columns || highlights.removed_columns) {
             const addedCols = highlights.added_columns || [];
             const removedCols = highlights.removed_columns || [];
-
             const headerThs = document.querySelectorAll('#grid-header th[data-col], #grid-header td[data-col]');
 
-            // A. Handle Column Removals
             if (removedCols.length > 0) {
                 headerThs.forEach(th => {
                     const colName = th.textContent.replace(/[▲▼↕]/g, '').trim().toLowerCase();
                     const colIdx = th.getAttribute('data-col');
-
-                    const isMatch = removedCols.some(c => c.trim().toLowerCase() === colName);
-                    if (isMatch) {
+                    if (removedCols.some(c => String(c).trim().toLowerCase() === colName)) {
                         th.classList.add('ai-highlight-remove');
                         gridBody.querySelectorAll(`td[data-col="${colIdx}"]`).forEach(td => td.classList.add('ai-highlight-remove'));
                     }
                 });
             }
 
-            // B. Handle Column Additions (Highlight rightmost edge / new column placement)
             if (addedCols.length > 0) {
                 let maxColIdx = -1;
+                const headerRow = document.querySelector('#grid-header tr') || document.querySelector('#grid-header');
+
                 headerThs.forEach(th => {
                     const colIdx = parseInt(th.getAttribute('data-col'), 10);
                     if (!isNaN(colIdx)) maxColIdx = Math.max(maxColIdx, colIdx);
                 });
 
-                // Highlight existing column headers matching added names OR the next column target
-                addedCols.forEach(newColName => {
-                    let matched = false;
+                addedCols.forEach((newColName, offset) => {
+                    let matchedTh = null;
                     headerThs.forEach(th => {
-                        const colName = th.textContent.replace(/[▲▼↕]/g, '').trim().toLowerCase();
-                        if (colName === newColName.trim().toLowerCase()) {
-                            const colIdx = th.getAttribute('data-col');
-                            th.classList.add('ai-highlight-add');
-                            gridBody.querySelectorAll(`td[data-col="${colIdx}"]`).forEach(td => td.classList.add('ai-highlight-add'));
-                            matched = true;
+                        if (th.textContent.replace(/[▲▼↕]/g, '').trim().toLowerCase() === String(newColName).trim().toLowerCase()) {
+                            matchedTh = th;
                         }
                     });
 
-                    // If column doesn't exist in DOM yet, highlight the last column border/header as target area
-                    if (!matched && maxColIdx >= 0) {
-                        const lastHeader = document.querySelector(`#grid-header [data-col="${maxColIdx}"]`);
-                        if (lastHeader) lastHeader.classList.add('ai-highlight-add');
-                        gridBody.querySelectorAll(`td[data-col="${maxColIdx}"]`).forEach(td => td.classList.add('ai-highlight-add'));
+                    if (matchedTh) {
+                        const colIdx = matchedTh.getAttribute('data-col');
+                        matchedTh.classList.add('ai-highlight-add');
+                        gridBody.querySelectorAll(`td[data-col="${colIdx}"]`).forEach(td => td.classList.add('ai-highlight-add'));
+                    } else if (headerRow) {
+                        const virtualColIdx = maxColIdx + 1 + offset;
+                        const previewTh = document.createElement('th');
+                        previewTh.setAttribute('data-col', virtualColIdx);
+                        previewTh.classList.add('ai-highlight-add', 'ai-virtual-preview');
+                        previewTh.textContent = newColName;
+                        headerRow.appendChild(previewTh);
+
+                        gridBody.querySelectorAll('tr').forEach((tr, rIdx) => {
+                            const previewTd = document.createElement('td');
+                            previewTd.setAttribute('data-col', virtualColIdx);
+                            previewTd.setAttribute('data-row', rIdx);
+                            previewTd.classList.add('ai-highlight-add', 'ai-virtual-preview');
+                            previewTd.textContent = '—';
+                            tr.appendChild(previewTd);
+                        });
                     }
                 });
             }
         }
 
-        // ------------------------------------------------------------------
-        // 2. Row Deletions & Duplicate Removal Preview
-        // ------------------------------------------------------------------
-        // Handles payload variants: removed_rows, duplicate_rows, row_indices, or rows
-        const rowsToDelete = highlights.removed_rows || highlights.duplicate_rows || highlights.row_indices || highlights.rows;
-        if (rowsToDelete && Array.isArray(rowsToDelete) && rowsToDelete.length > 0) {
-            highlightRowsForDeletion(rowsToDelete);
-        } else if (highlights.action_type === 'REMOVE_DUPLICATES' || highlights.type === 'HIGHLIGHT_DUPLICATES') {
-            // Fallback: If no explicit row array is given, trigger client-side duplicate detection preview
-            highlightDuplicatesForDeletion();
-        }
 
         // ------------------------------------------------------------------
         // 3. Fill Missing Values Preview
@@ -662,7 +673,7 @@ function renderConfirmationButtons() {
 
                 if (colText && !isNaN(colIdx)) {
                     maxTableCol = Math.max(maxTableCol, colIdx);
-                    if (targetColName && targetColName !== "ALL_COLUMNS" && colText.toLowerCase() === targetColName.toLowerCase()) {
+                    if (targetColName && targetColName !== "ALL_COLUMNS" && colText.toLowerCase() === String(targetColName).toLowerCase()) {
                         targetColIdx = colIdx;
                     }
                 }
@@ -688,7 +699,7 @@ function renderConfirmationButtons() {
                 if (targetColIdx >= 0 && colIdx !== targetColIdx) return;
 
                 const text = cell.textContent.trim();
-                if (text === '' || text === 'N/A' || text === 'null') {
+                if (text === '' || text === 'null') {
                     cell.dataset.origText = cell.textContent;
                     cell.innerHTML = `<span class="fill-preview-badge">${fillValue}</span>`;
                     cell.classList.add('ai-highlight-add');
@@ -697,18 +708,27 @@ function renderConfirmationButtons() {
         }
 
         // ------------------------------------------------------------------
-        // 4. Cell Diffs Preview: [old] -> [new]
+        // 4. Cell Diffs Preview
         // ------------------------------------------------------------------
         if (highlights.cell_diffs && Array.isArray(highlights.cell_diffs)) {
             highlights.cell_diffs.forEach(diff => {
                 const oldVal = String(diff.old_val).trim();
                 const newVal = String(diff.new_val).trim();
+                const targetColName = diff.column ? String(diff.column).trim().toLowerCase() : null;
 
-                const cells = gridBody.querySelectorAll('td[data-row][data-col]');
-                cells.forEach(cell => {
-                    const text = cell.textContent.trim();
-                    if (text === oldVal) {
-                        cell.dataset.origText = cell.textContent;
+                let targetColIdx = null;
+                if (targetColName) {
+                    document.querySelectorAll('#grid-header th[data-col]').forEach(th => {
+                        if (th.textContent.replace(/[▲▼↕]/g, '').trim().toLowerCase() === targetColName) {
+                            targetColIdx = th.getAttribute('data-col');
+                        }
+                    });
+                }
+
+                const selector = targetColIdx !== null ? `td[data-col="${targetColIdx}"]` : 'td[data-col]';
+                gridBody.querySelectorAll(selector).forEach(cell => {
+                    if (cell.textContent.trim() === oldVal) {
+                        if (!cell.dataset.origText) cell.dataset.origText = cell.innerHTML;
                         cell.innerHTML = `<div class="diff-container"><span class="diff-old">${oldVal}</span><span class="diff-arrow">&rarr;</span><span class="diff-new">${newVal}</span></div>`;
                         cell.classList.add('ai-highlight-diff');
                     }
@@ -719,92 +739,12 @@ function renderConfirmationButtons() {
         if (typeof autoFitColumnWidth === 'function') {
             autoFitColumnWidth();
         }
-    }
-
-    function highlightRowsForDeletion(rowIndices) {
-        if (!gridBody || !Array.isArray(rowIndices)) return;
-
-        rowIndices.forEach(idx => {
-            // Method A: Look up cells with matching data-row attribute
-            const targetCells = gridBody.querySelectorAll(`td[data-row="${idx}"]`);
-            if (targetCells.length > 0) {
-                targetCells.forEach(td => td.classList.add('ai-highlight-remove'));
-                const parentRow = targetCells[0].closest('tr');
-                if (parentRow) parentRow.classList.add('ai-highlight-remove');
-                return;
-            }
-
-            // Method B: Fallback to DOM row index if data-row isn't directly matched
-            const trs = gridBody.querySelectorAll('tr');
-            if (trs[idx]) {
-                trs[idx].classList.add('ai-highlight-remove');
-                trs[idx].querySelectorAll('td').forEach(td => td.classList.add('ai-highlight-remove'));
-            }
-        });
-    }   
-
-    function highlightDuplicatesForDeletion() {
-        if (!gridBody) return;
-
-        let maxTableCol = -1;
-        const headerCells = document.querySelectorAll('#grid-header th[data-col], #grid-body tr:first-child td[data-col]');
-        headerCells.forEach(th => {
-            const text = th.textContent.replace(/[▲▼↕]/g, '').trim();
-            const colIdx = parseInt(th.getAttribute('data-col'), 10);
-            if (text && !isNaN(colIdx)) maxTableCol = Math.max(maxTableCol, colIdx);
-        });
-
-        const rowsMap = new Map();
-        const dataCells = gridBody.querySelectorAll('td[data-row][data-col]');
-
-        dataCells.forEach(cell => {
-            const colIdx = parseInt(cell.getAttribute('data-col'), 10);
-            if (maxTableCol >= 0 && colIdx > maxTableCol) return;
-
-            const rowNum = cell.getAttribute('data-row');
-            if (!rowsMap.has(rowNum)) rowsMap.set(rowNum, []);
-            rowsMap.get(rowNum).push(cell);
-        });
-
-        const rowSignatureMap = new Map();
-
-        rowsMap.forEach((cells, rowNum) => {
-            cells.sort((a, b) => parseInt(a.getAttribute('data-col'), 10) - parseInt(b.getAttribute('data-col'), 10));
-
-            const rowValues = cells.map(cell => {
-                const clone = cell.cloneNode(true);
-                clone.querySelectorAll('button, .sortBtn, .action-btn').forEach(btn => btn.remove());
-                return clone.textContent.trim();
-            });
-
-            if (rowValues.every(val => val === '')) return;
-
-            const rowSignature = rowValues.join(' | ');
-
-            if (!rowSignatureMap.has(rowSignature)) {
-                rowSignatureMap.set(rowSignature, []);
-            }
-            rowSignatureMap.get(rowSignature).push(rowNum);
-        });
-
-        // Mark 2nd+ occurrences as targeted for deletion (.ai-highlight-remove)
-        rowSignatureMap.forEach((duplicateRowNums) => {
-            if (duplicateRowNums.length > 1) {
-                // Keep index 0, mark index 1+ for deletion preview
-                duplicateRowNums.slice(1).forEach(rowNum => {
-                    const cells = rowsMap.get(rowNum);
-                    if (cells) {
-                        cells.forEach(cell => cell.classList.add('ai-highlight-remove'));
-                        const tr = cells[0].closest('tr');
-                        if (tr) tr.classList.add('ai-highlight-remove');
-                    }
-                });
-            }
-        });
-    }
+    }    
 
     function highlightMissingCellsClientSide(targetColumn) {
-        clearAIHighlights();
+        if (typeof clearAIHighlights === 'function') {
+            clearAIHighlights();
+        }
 
         let maxTableCol = -1;
         let targetColIdx = -1;
@@ -842,7 +782,7 @@ function renderConfirmationButtons() {
             if (targetColIdx >= 0 && colIdx !== targetColIdx) return;
 
             const text = cell.textContent.trim();
-            if (text === '' || text === 'N/A' || text === 'null') {
+            if (text === '' || text === 'null') {
                 cell.classList.add('ai-highlight-missing');
             }
         });
@@ -859,23 +799,6 @@ function renderConfirmationButtons() {
             await loadPageData(activeTable, currentPage || 1);
         }
         
-        if (typeof renderTabs === 'function') renderTabs();
-        if (typeof renderGrid === 'function') renderGrid();
-    }
-
-    async function switchActiveTable(tableName) {
-        if (!tableName) return;
-        if(activeTable === tableName) return;
-
-        if (activeTable) {
-            await syncActiveTableToBackend();
-        }
-
-        activeTable = tableName;
-        await refreshWorkspaceGrid();
-        if (typeof loadPageData === 'function') {
-            await loadPageData(activeTable, 1);
-        }
         if (typeof renderTabs === 'function') renderTabs();
         if (typeof renderGrid === 'function') renderGrid();
     }
@@ -1358,6 +1281,7 @@ function renderConfirmationButtons() {
             activeTable = match.table;
             await loadPageData(activeTable, targetPage);
             renderTabs();
+            renderGrid();
         }
 
         applyCurrentTableHighlights();
@@ -1729,27 +1653,38 @@ function renderConfirmationButtons() {
     function highlightSqlLog(rawLogLine) {
         if (!rawLogLine) return "";
 
-        let line = rawLogLine.replace(/EXEC SQL:\s*/, "");
         let timestampHtml = "";
         let levelHtml = "";
 
-        line = line.replace(/^(\d{2}:\d{2}:\d{2})\s+\[(INFO|WARNING|ERROR)\]\s*/, (match, ts, level) => {
+        // 1. Extract Timestamp (HH:MM:SS) and Log Level [INFO/WARNING/ERROR]
+        let line = rawLogLine.replace(/^(\d{2}:\d{2}:\d{2})\s+\[(INFO\vert{}WARNING\vert{}ERROR)\]\s*/, (match, ts, level) => {
             timestampHtml = `<span class="log-timestamp">${ts}</span> `;
-            levelHtml = `<span class="log-level-info">[${level}]</span> `;
+            const levelClass = level.toLowerCase() === 'error' ? 'log-level-error' : 'log-level-info';
+            levelHtml = `<span class="${levelClass}">[${level}]</span> `;
             return "";
         });
 
+        // 2. Remove "EXEC SQL:" prefix
+        line = line.replace(/EXEC SQL:\s*/g, "");
+
+        // 3. Escape HTML entities
         let safeSql = line
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
             .replace(/>/g, "&gt;");
 
+        // 4. Tokenize strings and table/column names to protect them from keyword replacement
         safeSql = safeSql.replace(/'([^']*)'/g, '___STR___$1___STR___');
         safeSql = safeSql.replace(/"([^"]+)"/g, '___TBL___$1___TBL___');
 
-        const sqlKeywordsRegex = /\b(SELECT|UPDATE|SET|WHERE|INSERT INTO|VALUES|DELETE FROM|CREATE TABLE|ALTER TABLE|ADD COLUMN|DROP COLUMN|DROP TABLE|BEGIN TRANSACTION|COMMIT|PRAGMA|FROM|ORDER BY|ASC|DESC)\b/gi;
+        // 5. Highlight SQL Keywords
+        const sqlKeywordsRegex = /\b(SELECT|UPDATE|SET|WHERE|INSERT INTO|VALUES|DELETE FROM|CREATE TABLE|ALTER TABLE|ADD COLUMN|DROP COLUMN|DROP TABLE|IF EXISTS|BEGIN|COMMIT|PRAGMA|FROM|ORDER BY|ASC|DESC|INTEGER|TEXT|REAL)\b/gi;
         safeSql = safeSql.replace(sqlKeywordsRegex, (match) => `<span class="sql-keyword">${match.toUpperCase()}</span>`);
 
+        // 6. Highlight Standalone Numbers
+        safeSql = safeSql.replace(/\b(\d+)\b/g, '<span class="sql-number">$1</span>');
+
+        // 7. Restore Strings ('...') and Table/Column Identifiers ("...") with proper HTML styling
         safeSql = safeSql
             .replace(/___STR___(.*?)___STR___/g, '\'<span class="sql-string">$1</span>\'')
             .replace(/___TBL___(.*?)___TBL___/g, '"<span class="sql-table">$1</span>"');
@@ -1758,9 +1693,11 @@ function renderConfirmationButtons() {
     }
 
     async function fetchLogs() {
+        if (!logsContent) return;
+
         try {
             logsContent.innerHTML = '<div class="log-line system-msg">Fetching execution logs...</div>';
-            
+        
             const response = await fetch("/api/logs?limit=50");
             const result = await response.json();
 
@@ -2332,7 +2269,7 @@ function renderConfirmationButtons() {
     }
  
 
-    function sanitizeTablesData() {
+    async function sanitizeTablesData() {
         if (!activeTable || !tablesData[activeTable]) return;
 
         const table = tablesData[activeTable];
@@ -2351,7 +2288,6 @@ function renderConfirmationButtons() {
             const colHeaderHasValue = table.columns[c] && String(table.columns[c]).trim() !== '';
             const colDataHasValue = table.rows.some(r => r[c] !== undefined && r[c] !== null && String(r[c]).trim() !== '');
 
-            // Retain column index if it has either a valid header or valid data cell
             if (colHeaderHasValue || colDataHasValue) {
                 activeColIndices.push(c);
             }
@@ -2367,22 +2303,22 @@ function renderConfirmationButtons() {
             activeColIndices.map(cIdx => (row[cIdx] !== undefined && row[cIdx] !== null ? row[cIdx] : ''))
         );
 
-        // 4. Sync cleaned active table back to backend staging
+        // 4. AWAIT the sync back to backend staging
         if (typeof syncActiveTableToBackend === 'function') {
-            syncActiveTableToBackend();
+            await syncActiveTableToBackend();
         }
     }
 
     async function saveDatabase() {
-        // 1. Sync current page edits to server first
-        sanitizeTablesData();
+        // 1. MUST await syncing current page edits to server first
+        await sanitizeTablesData();
 
         let filepathVal = dbFilenameDisplay ? dbFilenameDisplay.textContent.trim() : 'database.db';
         if (!filepathVal) filepathVal = 'database.db';
         if (!filepathVal.endsWith('.db')) filepathVal = `${filepathVal}.db`;
 
         try {
-            // Post without overwriting tablesData in the body - server streams intact working_session.db
+            // Now /api/save receives a fully updated backend SQLite session
             const response = await fetch('/api/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -2414,10 +2350,14 @@ function renderConfirmationButtons() {
             if (dbFilenameDisplay) dbFilenameDisplay.textContent = filepathVal;
             hasBeenSavedBefore = true;
             setDirty(false);
-            renderTabs();
-            renderGrid();
+            if (typeof renderTabs === 'function') renderTabs();
+            if (typeof renderGrid === 'function') renderGrid();
         } catch (err) {
-            await Dialog.alert(`Save failed: ${err.message}`, 'Save Error');
+            if (typeof Dialog !== 'undefined' && Dialog.alert) {
+                await Dialog.alert(`Save failed: ${err.message}`, 'Save Error');
+            } else {
+                alert(`Save failed: ${err.message}`);
+            }
         }
     }
 
@@ -2425,7 +2365,8 @@ function renderConfirmationButtons() {
         let defaultName = dbFilenameDisplay ? dbFilenameDisplay.textContent.trim() : 'database.db';
         if (!defaultName) defaultName = 'database.db';
 
-        sanitizeTablesData();
+        // 1. MUST await syncing active page edits first
+        await sanitizeTablesData();
 
         if ('showSaveFilePicker' in window) {
             try {
@@ -2458,11 +2399,15 @@ function renderConfirmationButtons() {
                 if (dbFilenameDisplay) dbFilenameDisplay.textContent = handle.name;
 
                 setDirty(false);
-                renderTabs();
-                renderGrid();
+                if (typeof renderTabs === 'function') renderTabs();
+                if (typeof renderGrid === 'function') renderGrid();
             } catch (err) {
                 if (err.name !== 'AbortError') {
-                    await Dialog.alert(`Save As failed: ${err.message}`, 'Save Error');
+                    if (typeof Dialog !== 'undefined' && Dialog.alert) {
+                        await Dialog.alert(`Save As failed: ${err.message}`, 'Save Error');
+                    } else {
+                        alert(`Save As failed: ${err.message}`);
+                    }
                 }
             }
         } else {
