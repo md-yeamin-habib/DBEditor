@@ -34,6 +34,9 @@ class AIService:
         elif any(kw in query_lower for kw in ["average of", "avg of", "top", "merge columns", "replace with average"]):
             return self._handle_subject_average(active_table, query_text)
 
+        elif any(kw in query_lower for kw in ["total of", "sum of", "total score", "add total", "replace with total"]):
+            return self._handle_subject_total(active_table, query_text)
+
         elif any(kw in query_lower for kw in ["change", "update", "replace value", "set"]):
             return self._stage_cell_value_change(active_table, query_text)
 
@@ -52,7 +55,7 @@ class AIService:
         elif any(kw in query_lower for kw in ["student profile", "career aspiration", "marks and phone", "student details"]):
             return self._generate_student_profile(query_text)
 
-        elif any(kw in query_lower for kw in ["total cost", "sum", "total price", "bought"]):
+        elif any(kw in query_lower for kw in ["total cost", "sum", "total price", "bought", "bill"]):
             return self._calculate_sum(active_table)
 
         elif any(kw in query_lower for kw in ["add rank", "rank column", "rank", "rank students"]):
@@ -141,6 +144,37 @@ class AIService:
 
                 conn.commit()
                 msg = f"Updated values from `{old_val}` to `{new_val}` in `{table_name}`."
+
+            
+            elif action_type == "ADD_TOTAL_COLUMN":
+                new_col = action_payload.get("new_col")
+                source_cols = action_payload.get("source_cols")
+                drop_originals = action_payload.get("drop_originals", False)
+
+                cursor.execute(f'PRAGMA table_info("{table_name}");')
+                existing_cols = [info[1] for info in cursor.fetchall()]
+
+                if new_col not in existing_cols:
+                    cursor.execute(f'ALTER TABLE "{table_name}" ADD COLUMN "{new_col}" REAL;')
+
+                sum_parts = [
+                    f'COALESCE(CAST(REPLACE(REPLACE("{c}", "$", ""), ",", "") AS REAL), 0)'
+                    for c in source_cols
+                ]
+                sum_expression = " + ".join(sum_parts)
+                
+                update_sql = f'UPDATE "{table_name}" SET "{new_col}" = ROUND(({sum_expression}), 2);'
+                cursor.execute(update_sql)
+
+                if drop_originals:
+                    for c in source_cols:
+                        try:
+                            cursor.execute(f'ALTER TABLE "{table_name}" DROP COLUMN "{c}";')
+                        except sqlite3.OperationalError:
+                            pass
+
+                conn.commit()
+                msg = f"Successfully created column `{new_col}` with totals from {source_cols}."
 
             elif action_type == "ADD_AVERAGE_COLUMN":
                 new_col = action_payload.get("new_col")
@@ -314,6 +348,82 @@ class AIService:
         finally:
             conn.close()
 
+    def _handle_subject_total(self, table_name: str, query_text: str) -> dict:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(f'PRAGMA table_info("{table_name}");')
+            cols_info = cursor.fetchall()
+            existing_cols = [info[1] for info in cols_info]
+
+            query_lower = query_text.lower()
+            drop_originals = any(k in query_lower for k in ["replace", "drop", "instead of", "remove originals"])
+
+            new_col_match = re.search(r'(?:add|call it|name it|as)\s+([a-zA-Z0-9_]+)', query_lower)
+            new_col = new_col_match.group(1).title() if new_col_match else "Total_Score"
+
+            matched_cols = [c for c in existing_cols if c.lower() in query_lower and c.lower() not in ["rank", "id", "roll"]]
+            top_n_match = re.search(r'top\s+(\d+)', query_lower)
+
+            if matched_cols:
+                source_cols = matched_cols
+            elif top_n_match:
+                n = int(top_n_match.group(1))
+                numeric_cols = [c for c in existing_cols if any(k in c.lower() for k in ["marks", "mathematics", "english", "physics", "chemistry", "biology", "history", "geography", "score"])]
+                source_cols = numeric_cols[:n] if numeric_cols else existing_cols[:n]
+            else:
+                source_cols = [c for c in existing_cols if any(k in c.lower() for k in ["marks", "mathematics", "english", "physics", "chemistry", "biology", "history", "geography", "score"])]
+
+            if not source_cols:
+                return {"message": f"Could not determine valid subject columns to sum in `{table_name}`.", "actions": []}
+
+            # --- PRE-COMPUTE PREVIEW VALUES FOR STAGING ---
+            sum_parts = [
+                f'COALESCE(CAST(REPLACE(REPLACE("{c}", "$", ""), ",", "") AS REAL), 0)'
+                for c in source_cols
+            ]
+            sum_expression = " + ".join(sum_parts)
+            
+            calc_query = f'SELECT ROUND(({sum_expression}), 2) FROM "{table_name}" ORDER BY _rowid_;'
+            cursor.execute(calc_query)
+            computed_totals = [row[0] for row in cursor.fetchall()]
+
+            staged_payload = {
+                "action_type": "ADD_TOTAL_COLUMN",
+                "table_name": table_name,
+                "new_col": new_col,
+                "source_cols": source_cols,
+                "drop_originals": drop_originals
+            }
+
+            msg = (
+                f"**Proposed Table Action:**\n"
+                f"- Calculate total sum of columns: `{', '.join(source_cols)}`\n"
+                f"- New Column: **`{new_col}`** (Highlighted in **Green**)\n"
+            )
+            if drop_originals:
+                msg += f"- Columns to Drop: `{', '.join(source_cols)}` (Highlighted in **Red**)\n"
+
+            msg += "\nDo you want to accept these changes?"
+
+            return {
+                "message": msg,
+                "actions": [{
+                    "type": "STAGED_CONFIRMATION",
+                    "payload": staged_payload,
+                    "highlights": {
+                        "added_columns": [new_col],
+                        "added_column_values": {
+                            new_col: computed_totals
+                        },
+                        "removed_columns": source_cols if drop_originals else []
+                    }
+                }]
+            }
+        finally:
+            conn.close()
+
     def _handle_subject_average(self, table_name: str, query_text: str) -> dict:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -344,6 +454,18 @@ class AIService:
             if not source_cols:
                 return {"message": f"Could not determine valid subject columns to average in `{table_name}`.", "actions": []}
 
+            # --- PRE-COMPUTE PREVIEW VALUES FOR STAGING ---
+            sum_parts = [
+                f'COALESCE(CAST(REPLACE(REPLACE("{c}", "$", ""), ",", "") AS REAL), 0)'
+                for c in source_cols
+            ]
+            sum_expression = " + ".join(sum_parts)
+            count_expression = len(source_cols)
+            
+            calc_query = f'SELECT ROUND(({sum_expression}) / {count_expression}, 2) FROM "{table_name}" ORDER BY _rowid_;'
+            cursor.execute(calc_query)
+            computed_averages = [row[0] for row in cursor.fetchall()]
+
             staged_payload = {
                 "action_type": "ADD_AVERAGE_COLUMN",
                 "table_name": table_name,
@@ -369,12 +491,68 @@ class AIService:
                     "payload": staged_payload,
                     "highlights": {
                         "added_columns": [new_col],
+                        "added_column_values": {
+                            new_col: computed_averages
+                        },
                         "removed_columns": source_cols if drop_originals else []
                     }
                 }]
             }
         finally:
             conn.close()
+
+
+    def _stage_rank_column(self, table_name: str, query_text: str) -> dict:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute(f'PRAGMA table_info("{table_name}");')
+            columns = [info[1] for info in cursor.fetchall()]
+
+            target_col = next((c for c in columns if c.lower() in query_text.lower() and c.lower() not in ["rank", "id"]), None)
+            if not target_col:
+                target_col = next((c for c in columns if c.lower() in ["total_score", "final_score", "total", "marks", "score"]), columns[0])
+
+            # --- PRE-COMPUTE RANK PREVIEW VALUES FOR STAGING ---
+            clean_col = f'CAST(REPLACE(REPLACE("{target_col}", "$", ""), ",", "") AS REAL)'
+            rank_query = f'''
+                WITH Ranked AS (
+                    SELECT _rowid_ as rid, DENSE_RANK() OVER (ORDER BY {clean_col} DESC) as computed_rank
+                    FROM "{table_name}"
+                )
+                SELECT computed_rank FROM "{table_name}"
+                JOIN Ranked ON "{table_name}"._rowid_ = Ranked.rid
+                ORDER BY "{table_name}"._rowid_;
+            '''
+            cursor.execute(rank_query)
+            computed_ranks = [row[0] for row in cursor.fetchall()]
+
+            msg = (
+                f"**Proposed Table Action:** Add **Rank** column calculated from **`{target_col}`**.\n"
+                f"New column will be highlighted in **Green**.\n\n"
+                f"Accept or Cancel modifications?"
+            )
+
+            return {
+                "message": msg,
+                "actions": [{
+                    "type": "STAGED_CONFIRMATION",
+                    "payload": {
+                        "action_type": "ADD_RANK",
+                        "table_name": table_name,
+                        "target_col": target_col
+                    },
+                    "highlights": {
+                        "added_columns": ["Rank"],
+                        "added_column_values": {
+                            "Rank": computed_ranks
+                        }
+                    }
+                }]
+            }
+        finally:
+            conn.close()
+
 
     def _stage_cell_value_change(self, table_name: str, query_text: str) -> dict:
         match = re.search(r'(?:change|replace|set)\s+(?:.*?\s+)?([0-9]+(?:\.[0-9]+)?|\w+)\s+(?:to|with|->)\s+([0-9]+(?:\.[0-9]+)?|\w+)', query_text, re.IGNORECASE)
@@ -622,40 +800,6 @@ class AIService:
                 msg = f"Total sum of **{target_col}** in `{table_name}`: **${total:.2f}**"
 
             return {"message": msg, "actions": []}
-        finally:
-            conn.close()
-
-    def _stage_rank_column(self, table_name: str, query_text: str) -> dict:
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        try:
-            cursor.execute(f'PRAGMA table_info("{table_name}");')
-            columns = [info[1] for info in cursor.fetchall()]
-
-            target_col = next((c for c in columns if c.lower() in query_text.lower() and c.lower() not in ["rank", "id"]), None)
-            if not target_col:
-                target_col = next((c for c in columns if c.lower() in ["total_score", "final_score", "total", "marks", "score"]), columns[0])
-
-            msg = (
-                f"**Proposed Table Action:** Add **Rank** column calculated from **`{target_col}`**.\n"
-                f"New column will be highlighted in **Green**.\n\n"
-                f"Accept or Cancel modifications?"
-            )
-
-            return {
-                "message": msg,
-                "actions": [{
-                    "type": "STAGED_CONFIRMATION",
-                    "payload": {
-                        "action_type": "ADD_RANK",
-                        "table_name": table_name,
-                        "target_col": target_col
-                    },
-                    "highlights": {
-                        "added_columns": ["Rank"]
-                    }
-                }]
-            }
         finally:
             conn.close()
 
