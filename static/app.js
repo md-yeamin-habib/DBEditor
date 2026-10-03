@@ -385,10 +385,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function cancelStagedAction() {
-        stagedPayload = null;
-        clearConfirmationButtons();
-        clearAIHighlights();
-        renderChatMessage('Cancelled the staged action.', 'bot');
+        // Only cancel and notify if there is actually a staged action pending
+        if (stagedPayload !== null) {
+            stagedPayload = null;
+            clearConfirmationButtons();
+            clearAIHighlights();
+            renderChatMessage('Cancelled the staged action.', 'bot');
+        } else {
+            // Fallback cleanup if Esc is pressed without an active staged action
+            clearAIHighlights();
+        }
     }
 
     function renderConfirmationButtons() {
@@ -426,7 +432,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function highlightDuplicatesClientSide(skipFirst = false) {
         if (!gridBody) return;
-
         
         clearAIHighlights();
 
@@ -490,36 +495,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-
-    function clearAIHighlights() {
-        if (!gridBody) return;
-
-        // Clear header highlights
-        const gridHeader = document.getElementById('grid-header');
-        if (gridHeader) {
-            gridHeader.querySelectorAll('.ai-highlight-add, .ai-highlight-remove').forEach(th => {
-                th.classList.remove('ai-highlight-add', 'ai-highlight-remove');
-            });
-        }
-
-        // Clear body highlights and restore modified diff/fill innerHTML
-        gridBody.querySelectorAll('.ai-highlight-duplicate, .ai-highlight-add, .ai-highlight-remove, .ai-highlight-diff, .ai-highlight-missing').forEach(cell => {
-            cell.classList.remove('ai-highlight-duplicate', 'ai-highlight-add', 'ai-highlight-remove', 'ai-highlight-diff', 'ai-highlight-missing');
-
-            // Restore original stored text if diff badge was applied
-            if (cell.dataset.origText !== undefined) {
-                cell.textContent = cell.dataset.origText;
-                delete cell.dataset.origText;
-            }
-        });
-
-        // Clear row-level deletion styling
-        gridBody.querySelectorAll('tr.ai-highlight-remove').forEach(tr => tr.classList.remove('ai-highlight-remove'));
-
-        if (typeof autoFitColumnWidth === 'function') {
-            autoFitColumnWidth();
-        }
-    }
 
     // Global ESC key listener to cancel previews & clear highlights
     document.addEventListener('keydown', (e) => {
@@ -599,6 +574,54 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof setDirty === 'function') setDirty(true);
     }
 
+    function clearAIHighlights() {
+        if (!gridBody) return;
+
+        // Remove highlight classes and restore original cell texts
+        const highlightedCells = document.querySelectorAll('.ai-highlight-add, .ai-highlight-remove, .ai-highlight-duplicate, .ai-highlight-diff, .ai-highlight-missing');
+    
+        highlightedCells.forEach(cell => {
+            cell.classList.remove('ai-highlight-add', 'ai-highlight-remove', 'ai-highlight-duplicate', 'ai-highlight-diff', 'ai-highlight-missing');
+
+            if (cell.dataset.origText !== undefined) {
+                cell.innerText = cell.dataset.origText;
+                delete cell.dataset.origText;
+            }
+        });
+
+        // Revert header text spans specifically
+        document.querySelectorAll('#grid-body .col-header-text').forEach(textSpan => {
+            if (textSpan.dataset.origText !== undefined) {
+                textSpan.innerText = textSpan.dataset.origText;
+                delete textSpan.dataset.origText;
+            }
+        });
+
+        if (typeof autoFitColumnWidth === 'function') {
+            autoFitColumnWidth();
+        }
+    }
+
+    function populateStagedColumnData(colIdx, valuesArray, maxRow) {
+        if (!Array.isArray(valuesArray)) return;
+
+        const cells = document.querySelectorAll(`#grid-body td[data-col="${colIdx}"]:not(.row-0-cell)`);
+        cells.forEach(td => {
+            const rowIdx = parseInt(td.getAttribute('data-row'), 10);
+        
+            if (rowIdx > 0 && rowIdx <= maxRow) {
+                const dataIndex = rowIdx - 1; // 1-based table row to 0-based array index
+                if (dataIndex < valuesArray.length && valuesArray[dataIndex] !== undefined) {
+                    // Save original value to revert on ESC/Cancel
+                    if (td.dataset.origText === undefined) {
+                        td.dataset.origText = td.innerText;
+                    }
+                    td.innerText = valuesArray[dataIndex];
+                }
+            }
+        });
+    }
+
     function applyStagedPreviewHighlights(highlights, actionPayload) {
         if (!highlights && !actionPayload) return;
 
@@ -622,61 +645,90 @@ document.addEventListener('DOMContentLoaded', () => {
         if (highlights.added_columns || highlights.removed_columns) {
             const addedCols = highlights.added_columns || [];
             const removedCols = highlights.removed_columns || [];
-            const headerThs = document.querySelectorAll('#grid-header th[data-col], #grid-header td[data-col]');
 
-            if (removedCols.length > 0) {
-                headerThs.forEach(th => {
-                    const colName = th.textContent.replace(/[▲▼↕]/g, '').trim().toLowerCase();
-                    const colIdx = th.getAttribute('data-col');
-                    if (removedCols.some(c => String(c).trim().toLowerCase() === colName)) {
-                        th.classList.add('ai-highlight-remove');
-                        gridBody.querySelectorAll(`td[data-col="${colIdx}"]`).forEach(td => td.classList.add('ai-highlight-remove'));
-                    }
-                });
-            }
+            // Calculate maxRow (boundary of actual table data)
+            let maxTableRow = 0;
+            document.querySelectorAll('#grid-body td[data-row][data-col]').forEach(cell => {
+                const rowIdx = parseInt(cell.getAttribute('data-row'), 10);
+                if (rowIdx > 0 && cell.textContent.trim() !== '') {
+                    maxTableRow = Math.max(maxTableRow, rowIdx);
+                }
+            });
 
+            // Helper map: Clean Header Title -> Column Data Index
+            const colNameToIndexMap = new Map();
+            document.querySelectorAll('#grid-body tr.row-0 td[data-col], #grid-body td.row-0-cell[data-col]').forEach(td => {
+                const colIdx = parseInt(td.getAttribute('data-col'), 10);
+                // Fallback to text content if no .col-header-text wrapper exists
+                const textSpan = td.querySelector('.col-header-text') || td;
+                const cleanName = textSpan.innerText.replace(/[\n\r\t]/g, '').replace(/[▲▼↕↑↓]/g, '').trim().toLowerCase();
+        
+                if (cleanName) {
+                    colNameToIndexMap.set(cleanName, colIdx);
+                }
+            });
+
+            // --- REMOVE COLUMNS HIGHLIGHT (RED) ---
+            removedCols.forEach(colName => {
+                const cleanTarget = String(colName).trim().toLowerCase();
+                const cIdx = colNameToIndexMap.get(cleanTarget);
+        
+                if (cIdx !== undefined) {
+                    const colCells = document.querySelectorAll(`#grid-body td[data-col="${cIdx}"]`);
+                    colCells.forEach(td => {
+                        const rowIdx = parseInt(td.getAttribute('data-row'), 10);
+                        if (td.classList.contains('row-0-cell') || rowIdx === 0 || rowIdx <= maxTableRow) {
+                            td.classList.add('ai-highlight-remove');
+                        }
+                    });
+                }
+            });
+
+            // --- ADD COLUMNS HIGHLIGHT & DATA POPULATION (GREEN) ---
             if (addedCols.length > 0) {
-                let maxColIdx = -1;
-                const headerRow = document.querySelector('#grid-header tr') || document.querySelector('#grid-header');
+                // Find next empty dataset column index
+                let nextAvailableCol = 0;
+                if (typeof tablesData !== 'undefined' && tablesData[activeTable]?.columns) {
+                    nextAvailableCol = tablesData[activeTable].columns.length;
+                } else {
+                    // Fallback: count non-empty row-0 header cells
+                    const existingHeaders = document.querySelectorAll('#grid-body tr.row-0 td.row-0-cell');
+                    existingHeaders.forEach(td => {
+                        if (td.textContent.trim() !== '') nextAvailableCol++;
+                    });
+                }
 
-                headerThs.forEach(th => {
-                    const colIdx = parseInt(th.getAttribute('data-col'), 10);
-                    if (!isNaN(colIdx)) maxColIdx = Math.max(maxColIdx, colIdx);
-                });
+                const addedValuesMap = highlights.added_column_values || actionPayload?.column_values || {};
 
                 addedCols.forEach((newColName, offset) => {
-                    let matchedTh = null;
-                    headerThs.forEach(th => {
-                        if (th.textContent.replace(/[▲▼↕]/g, '').trim().toLowerCase() === String(newColName).trim().toLowerCase()) {
-                            matchedTh = th;
+                    const targetColIdx = nextAvailableCol + offset;
+
+                    // 1. Highlight Header & Set Title
+                    const headerTd = document.querySelector(`#grid-body td.row-0-cell[data-col="${targetColIdx}"]`);
+                    if (headerTd) {
+                        headerTd.classList.add('ai-highlight-add');
+                        const textSpan = headerTd.querySelector('.col-header-text') || headerTd;
+                        if (textSpan.dataset.origText === undefined) {
+                            textSpan.dataset.origText = textSpan.innerText;
+                        }
+                        textSpan.innerText = newColName;
+                }
+
+                    // 2. Highlight Data Cells within Table Boundary
+                    document.querySelectorAll(`#grid-body td[data-col="${targetColIdx}"]:not(.row-0-cell)`).forEach(td => {
+                        const rowIdx = parseInt(td.getAttribute('data-row'), 10);
+                        if (rowIdx > 0 && rowIdx <= maxTableRow) {
+                            td.classList.add('ai-highlight-add');
                         }
                     });
 
-                    if (matchedTh) {
-                        const colIdx = matchedTh.getAttribute('data-col');
-                        matchedTh.classList.add('ai-highlight-add');
-                        gridBody.querySelectorAll(`td[data-col="${colIdx}"]`).forEach(td => td.classList.add('ai-highlight-add'));
-                    } else if (headerRow) {
-                        const virtualColIdx = maxColIdx + 1 + offset;
-                        const previewTh = document.createElement('th');
-                        previewTh.setAttribute('data-col', virtualColIdx);
-                        previewTh.classList.add('ai-highlight-add', 'ai-virtual-preview');
-                        previewTh.textContent = newColName;
-                        headerRow.appendChild(previewTh);
-
-                        gridBody.querySelectorAll('tr').forEach((tr, rIdx) => {
-                            const previewTd = document.createElement('td');
-                            previewTd.setAttribute('data-col', virtualColIdx);
-                            previewTd.setAttribute('data-row', rIdx);
-                            previewTd.classList.add('ai-highlight-add', 'ai-virtual-preview');
-                            previewTd.textContent = '—';
-                            tr.appendChild(previewTd);
-                        });
+                    // 3. Populate Preview Values
+                    if (addedValuesMap[newColName]) {
+                        populateStagedColumnData(targetColIdx, addedValuesMap[newColName], maxTableRow);
                     }
                 });
             }
         }
-
 
         // ------------------------------------------------------------------
         // 3. Fill Missing Values Preview
@@ -723,7 +775,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const text = cell.textContent.trim();
                 if (text === '' || text === 'null') {
                     cell.dataset.origText = cell.textContent;
-                    cell.innerHTML = `<span class="fill-preview-badge">${fillValue}</span>`;
+                    cell.textContent = fillValue;
                     cell.classList.add('ai-highlight-add');
                 }
             });
