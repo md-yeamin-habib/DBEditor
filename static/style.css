@@ -532,7 +532,6 @@ table td.ai-highlight-duplicate {
     border: 1px dashed #dc3545 !important;
 }
 
-/* Green preview for added column (header + cells) */
 #grid-header th.ai-highlight-add,
 #grid-body td.ai-highlight-add,
 #grid-body td[contenteditable="true"].ai-highlight-add {
@@ -550,6 +549,13 @@ table td.ai-highlight-duplicate {
     border-bottom: 1px dashed #dc3545 !important;
     color: #721c24 !important;
     text-decoration: line-through !important;
+}
+
+#grid-body tr.row-0 td.row-0-cell.ai-highlight-remove,
+#grid-body tr:first-child td.ai-highlight-remove {
+    background-color: #f8d7da !important;
+    color: #721c24 !important;
+    border: 1px dashed #dc3545 !important;
 }
 
 /* Add left and right borders to the ends of highlighted rows */
@@ -791,6 +797,9 @@ table td.ai-highlight-duplicate {
     cursor: pointer;
     user-select: none;
     white-space: nowrap;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .tab.active {
