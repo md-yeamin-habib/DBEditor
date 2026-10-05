@@ -291,6 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const data = await response.json();
+            
             handleAIQueryResponse(data);
             return data;
         } catch (error) {
