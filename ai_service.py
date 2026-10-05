@@ -188,6 +188,31 @@ class AIService:
                         )
                     msg = f"Updated values from `{old_val}` to `{new_val}` in `{table_name}`."
 
+                elif action_type == "UPDATE_CELL_VALUE":
+                    column = action_payload.get("column")
+                    old_val = action_payload.get("old_value")
+                    new_val = action_payload.get("new_value")
+                    
+                    parsed_old = self._clean_numeric_val(old_val)
+                    parsed_new = self._clean_numeric_val(new_val)
+
+                    if column:
+                        # Update specific column
+                        cursor.execute(
+                            f'UPDATE "{table_name}" SET "{column}" = ? WHERE "{column}" = ? OR CAST("{column}" AS TEXT) = ?;',
+                            (new_val, old_val, old_val)
+                        )
+                    else:
+                        # Update across all columns
+                        columns = self._get_table_columns(cursor, table_name)
+                        for col in columns:
+                            cursor.execute(
+                                f'UPDATE "{table_name}" SET "{col}" = ? WHERE "{col}" = ? OR CAST("{col}" AS TEXT) = ?;',
+                                (new_val, old_val, old_val)
+                        )
+                    msg = f"Updated values from `{old_val}` to `{new_val}` in `{column if column else "all columns"}` in `{table_name}`."
+
+
                 elif action_type in ("ADD_TOTAL_COLUMN", "ADD_AVERAGE_COLUMN"):
                     new_col = action_payload.get("new_col")
                     source_cols = action_payload.get("source_cols")
@@ -422,12 +447,10 @@ class AIService:
 
         with self._db_connection() as (_, cursor):
             columns = self._get_table_columns(cursor, table_name)
-            target_col = None
-            for col in columns:
-                cursor.execute(f'SELECT COUNT(*) FROM "{table_name}" WHERE "{col}" = ? OR CAST("{col}" AS TEXT) = ?;', (old_val, old_val))
-                if cursor.fetchone()[0] > 0:
-                    target_col = col
-                    break
+            query_lower = query_text.lower()
+            
+            # Check ONLY if a column name was explicitly mentioned in the user query text
+            target_col = next((c for c in columns if c.lower() in query_lower), None)
 
             return {
                 "message": (
@@ -440,7 +463,7 @@ class AIService:
                     "payload": {
                         "action_type": "UPDATE_CELL_VALUE",
                         "table_name": table_name,
-                        "column": target_col,
+                        "column": target_col, # None when generic, column_name when explicitly specified
                         "old_value": old_val,
                         "new_value": new_val
                     },
