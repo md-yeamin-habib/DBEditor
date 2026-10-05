@@ -184,7 +184,7 @@ class AIService:
                         # Update specific column
                         cursor.execute(
                             f'UPDATE "{table_name}" SET "{column}" = ? WHERE "{column}" = ? OR CAST("{column}" AS TEXT) = ?;',
-                            (new_val, old_val, old_val)
+                            (parsed_new, parsed_old, str(old_val))
                         )
                     else:
                         # Update across all columns
@@ -194,7 +194,7 @@ class AIService:
                                 f'UPDATE "{table_name}" SET "{col}" = ? WHERE "{col}" = ? OR CAST("{col}" AS TEXT) = ?;',
                                 (new_val, old_val, old_val)
                         )
-                    msg = f"Updated values from `{old_val}` to `{new_val}` in `{column if column else "all columns"}` in `{table_name}`."
+                    msg = f"Updated values from `{old_val}` to `{new_val}` in `{column if column else "all columns"}`  `{table_name}`."
 
 
                 elif action_type in ("ADD_TOTAL_COLUMN", "ADD_AVERAGE_COLUMN"):
