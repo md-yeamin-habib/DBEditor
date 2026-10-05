@@ -173,22 +173,6 @@ class AIService:
                     msg = f"Successfully removed duplicate rows from `{table_name}`."
 
                 elif action_type == "UPDATE_CELL_VALUE":
-                    target_col = action_payload.get("column")
-                    old_val = action_payload.get("old_value")
-                    new_val = action_payload.get("new_value")
-
-                    parsed_old = self._clean_numeric_val(old_val)
-                    parsed_new = self._clean_numeric_val(new_val)
-
-                    targets = [target_col] if target_col else self._get_table_columns(cursor, table_name)
-                    for col in targets:
-                        cursor.execute(
-                            f'UPDATE "{table_name}" SET "{col}" = ? WHERE "{col}" = ? OR CAST("{col}" AS TEXT) = ?;',
-                            (parsed_new, parsed_old, str(old_val))
-                        )
-                    msg = f"Updated values from `{old_val}` to `{new_val}` in `{table_name}`."
-
-                elif action_type == "UPDATE_CELL_VALUE":
                     column = action_payload.get("column")
                     old_val = action_payload.get("old_value")
                     new_val = action_payload.get("new_value")
