@@ -194,7 +194,7 @@ class AIService:
                                 f'UPDATE "{table_name}" SET "{col}" = ? WHERE "{col}" = ? OR CAST("{col}" AS TEXT) = ?;',
                                 (new_val, old_val, old_val)
                         )
-                    msg = f"Updated values from `{old_val}` to `{new_val}` in `{column if column else "all columns"}`  `{table_name}`."
+                    msg = f"Updated values from `{old_val}` to `{new_val}` in `{column if column else "all columns"}` in `{table_name}`."
 
 
                 elif action_type in ("ADD_TOTAL_COLUMN", "ADD_AVERAGE_COLUMN"):
