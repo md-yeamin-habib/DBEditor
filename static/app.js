@@ -299,9 +299,34 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Chat Lock Helper
+    function setChatInputDisabled(disabled) {
+        const aiInput = document.getElementById('ai-input');
+        const sendBtn = document.getElementById('ai-send-btn') || document.getElementById('btn-send-ai');
+
+        if (aiInput) {
+            aiInput.disabled = disabled;
+            if (disabled) {
+                aiInput.classList.add('chat-disabled');
+                aiInput.blur();
+            } else {
+                aiInput.classList.remove('chat-disabled');
+            }
+        }
+
+        if (sendBtn) {
+            sendBtn.disabled = disabled;
+            if (disabled) {
+                sendBtn.classList.add('chat-disabled');
+            } else {
+                sendBtn.classList.remove('chat-disabled');
+            }
+        }
+    }
+
     async function handleSendMessage() {
         const aiInput = document.getElementById('ai-input');
-        if (!aiInput) return;
+        if (!aiInput || aiInput.disabled) return;
 
         const query = aiInput.value.trim();
         if (!query) return;
@@ -343,6 +368,10 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        if (accepted && typeof saveState === 'function') {
+            saveState();
+        }
+
         const payloadToSend = stagedPayload;
         stagedPayload = null;
 
@@ -378,6 +407,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (accepted && !data.actions?.some(a => a.type === 'SWITCH_TABLE')) {
                 await refreshWorkspaceGrid();
             }
+            
         } catch (error) {
             console.error('Error confirming action:', error);
             renderChatMessage(`⚠️ Error confirming action: ${error.message}`, 'bot');
@@ -397,37 +427,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function renderConfirmationButtons() {
-        clearConfirmationButtons(); 
-
-        const chatBox = document.getElementById('chat-messages') || document.getElementById('chatBox');
-        if (!chatBox) return;
-
-        const btnContainer = document.createElement('div');
-        btnContainer.id = 'ai-confirmation-container';
-        btnContainer.className = 'ai-confirm-box flex gap-2 my-2 p-2 bg-slate-800 rounded-lg border border-slate-700';
-
-        const confirmBtn = document.createElement('button');
-        confirmBtn.className = 'px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-sm font-medium transition';
-        confirmBtn.textContent = '✓ Confirm Action';
-        confirmBtn.onclick = () => confirmAIAction(true);
-
-        const cancelBtn = document.createElement('button');
-        cancelBtn.className = 'px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-sm font-medium transition';
-        cancelBtn.textContent = '✕ Cancel (ESC)';
-        cancelBtn.onclick = () => confirmAIAction(false);
-
-        btnContainer.appendChild(confirmBtn);
-        btnContainer.appendChild(cancelBtn);
-        chatBox.appendChild(btnContainer);
-        chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
     function clearConfirmationButtons() {
         const container = document.getElementById('ai-confirmation-container');
         if (container) {
             container.remove();
         }
+        document.querySelectorAll('.ai-confirmation-actions').forEach(el => el.remove());
+        setChatInputDisabled(false);
     }
 
     function highlightDuplicatesClientSide(skipFirst = false) {
@@ -624,6 +630,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function applyStagedPreviewHighlights(highlights, actionPayload) {
         if (!highlights && !actionPayload) return;
+        clearAIHighlights();
 
         // ------------------------------------------------------------------
         // 1. Duplicate Removal Preview
@@ -736,47 +743,90 @@ document.addEventListener('DOMContentLoaded', () => {
         if (highlights.fill_preview) {
             const targetColName = highlights.fill_preview.column;
             const fillValue = highlights.fill_preview.fill_value;
+            const fillMap = highlights.fill_preview.fill_map;
 
-            let maxTableCol = -1;
-            let targetColIdx = -1;
+            // 1. Build a lookup map of DOM column index (data-col) to actual Column Header Name
+            const colIdxToName = {};
             const headerCells = document.querySelectorAll('#grid-header th[data-col], #grid-body tr:first-child td[data-col]');
 
-            headerCells.forEach(th => {
-                const colText = th.textContent.replace(/[▲▼↕]/g, '').trim();
-                const colIdx = parseInt(th.getAttribute('data-col'), 10);
-
-                if (colText && !isNaN(colIdx)) {
-                    maxTableCol = Math.max(maxTableCol, colIdx);
-                    if (targetColName && targetColName !== "ALL_COLUMNS" && colText.toLowerCase() === String(targetColName).toLowerCase()) {
-                        targetColIdx = colIdx;
-                    }
+            headerCells.forEach(cell => {
+                const colIdx = parseInt(cell.getAttribute('data-col'), 10);
+                // Clean sort indicators and whitespace
+                const colText = cell.textContent.replace(/[▲▼↕]/g, '').trim();
+                if (!isNaN(colIdx) && colText) {
+                    colIdxToName[colIdx] = colText;
                 }
             });
 
-            let maxTableRow = -1;
+            // Determine the maximum column index that belongs to the actual database table
+            const validColIndices = Object.keys(colIdxToName).map(idx => parseInt(idx, 10));
+            const maxValidColIdx = validColIndices.length > 0 ? Math.max(...validColIndices) : -1;
+
+            // Determine the maximum row index containing actual data within the table columns
+            let maxTableRow = 0;
+            const dataCells = gridBody.querySelectorAll('td[data-row][data-col]');
+            dataCells.forEach(cell => {
+                const colIdx = parseInt(cell.getAttribute('data-col'), 10);
+                const rowIdx = parseInt(cell.getAttribute('data-row'), 10);
+                if (colIdx <= maxValidColIdx && cell.textContent.trim() !== '') {
+                    maxTableRow = Math.max(maxTableRow, rowIdx);
+                }
+            });
+
+            // 2. Identify target column index if a single specific column is targeted
+            let targetColIdx = -1;
+            if (targetColName && targetColName !== "ALL_COLUMNS") {
+                for (const [colIdx, name] of Object.entries(colIdxToName)) {
+                    if (name.toLowerCase() === String(targetColName).toLowerCase()) {
+                        targetColIdx = parseInt(colIdx, 10);
+                        break;
+                    }
+                }
+            }
+
+            // 3. Highlight and inject the corresponding fill value into empty cells
             const allCells = gridBody.querySelectorAll('td[data-row][data-col]');
 
             allCells.forEach(cell => {
                 const colIdx = parseInt(cell.getAttribute('data-col'), 10);
                 const rowIdx = parseInt(cell.getAttribute('data-row'), 10);
 
-                if (colIdx <= maxTableCol && cell.textContent.trim() !== '') {
-                    maxTableRow = Math.max(maxTableRow, rowIdx);
-                }
-            });
+                // IGNORE cells beyond the table boundary (rows or filler columns J, K, L)
+                if (rowIdx > maxTableRow || (maxValidColIdx >= 0 && colIdx > maxValidColIdx)) return;
 
-            allCells.forEach(cell => {
-                const colIdx = parseInt(cell.getAttribute('data-col'), 10);
-                const rowIdx = parseInt(cell.getAttribute('data-row'), 10);
+                // Skip columns not present in header map
+                const colName = colIdxToName[colIdx];
+                if (!colName) return;
 
-                if (rowIdx > maxTableRow || colIdx > maxTableCol) return;
+                // Skip cells not belonging to the targeted column if targetColName is specified
                 if (targetColIdx >= 0 && colIdx !== targetColIdx) return;
 
                 const text = cell.textContent.trim();
                 if (text === '' || text === 'null') {
-                    cell.dataset.origText = cell.textContent;
-                    cell.textContent = fillValue;
-                    cell.classList.add('ai-highlight-add');
+                    let cellFillValue = null;
+
+                    // If a per-column map exists (e.g., table-wide median/mean), pick this column's specific value
+                    if (fillMap && typeof fillMap === 'object' && !Array.isArray(fillMap)) {
+                        if (fillMap[colName] !== undefined) {
+                            cellFillValue = fillMap[colName];
+                        } else {
+                            // Case-insensitive key lookup fallback
+                            const matchedKey = Object.keys(fillMap).find(
+                                key => key.toLowerCase() === colName.toLowerCase()
+                            );
+                            if (matchedKey) cellFillValue = fillMap[matchedKey];
+                        }
+                    } else if (typeof fillValue !== 'object') {
+                        // Standard scalar fill value (e.g., "N/A" or 0)
+                        cellFillValue = fillValue;
+                    }
+
+                    // Only apply highlight if a valid scalar fill value was resolved
+                    if (cellFillValue !== null && cellFillValue !== undefined) {
+                        cell.dataset.origText = cell.textContent;
+                        cell.textContent = cellFillValue;
+                        cell.classList.add('ai-highlight-add');
+                    }
                 }
             });
         }
@@ -909,7 +959,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function renderConfirmationButtons() {
-        const chatContainer = document.getElementById('chat-container') || document.getElementById('ai-chat-history');
+        const chatContainer = document.getElementById('chat-container') 
+                || document.getElementById('ai-chat-history')
+                || document.getElementById('chat-messages') 
+                || document.getElementById('chatBox');
+
         if (!chatContainer) return;
 
         clearConfirmationButtons();
@@ -938,10 +992,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         chatContainer.appendChild(btnGroup);
         chatContainer.scrollTop = chatContainer.scrollHeight;
-    }
-
-    function clearConfirmationButtons() {
-        document.querySelectorAll('.ai-confirmation-actions').forEach(el => el.remove());
+        setChatInputDisabled(true);
     }
 
     // Direct UI Listener bindings for Chat Input
@@ -1863,10 +1914,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         setDirty(true);
+        await syncActiveTableToBackend();
+
+        if (activeTable && typeof loadPageData === 'function') {
+            await loadPageData(activeTable, currentPage || 1);
+        }
+
         renderTabs();
         renderGrid();
         updateUndoRedoUI();
-        await syncActiveTableToBackend();
     }
 
     async function redo() {
@@ -1880,10 +1936,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         setDirty(true);
+        await syncActiveTableToBackend();
+
+        if (activeTable && typeof loadPageData === 'function') {
+            await loadPageData(activeTable, currentPage || 1);
+        }
+
         renderTabs();
         renderGrid();
         updateUndoRedoUI();
-        await syncActiveTableToBackend();
     }
 
     function resetHistory() {
@@ -2238,6 +2299,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function handlePaste(e) {
+        const target = e.target;
+        const isChatArea = target.closest('#ai-sidebar') || target.closest('#chat-container') || target.closest('#ai-chat-history') || target.id === 'ai-input';
+        const isInputOrEditable = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || (target.isContentEditable && !target.closest('#grid-body'));
+
+        if (isChatArea || isInputOrEditable) {
+            return; // Allow native paste behavior
+        }
+
         if (!activeTable || !tablesData[activeTable]) return;
 
         const clipboardData = e.clipboardData || window.clipboardData;
