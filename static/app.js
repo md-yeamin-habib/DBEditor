@@ -842,15 +842,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 let targetColIdx = null;
                 if (targetColName) {
-                    document.querySelectorAll('#grid-header th[data-col]').forEach(th => {
-                        if (th.textContent.replace(/[▲▼↕]/g, '').trim().toLowerCase() === targetColName) {
-                            targetColIdx = th.getAttribute('data-col');
+                    // Search across both #grid-header th and #grid-body header rows
+                    const headerElements = document.querySelectorAll(
+                        '#grid-header th[data-col], #grid-body tr.row-0 td[data-col], #grid-body td.row-0-cell[data-col]'
+                    );
+
+                    headerElements.forEach(header => {
+                        const textSpan = header.querySelector('.col-header-text') || header;
+                        const cleanHeaderName = textSpan.innerText
+                            .replace(/[\n\r\t]/g, '')
+                            .replace(/[▲▼↕↑↓]/g, '')
+                            .trim()
+                            .toLowerCase();
+
+                        if (cleanHeaderName === targetColName) {
+                            targetColIdx = header.getAttribute('data-col');
                         }
                     });
                 }
 
                 const selector = targetColIdx !== null ? `td[data-col="${targetColIdx}"]` : 'td[data-col]';
                 gridBody.querySelectorAll(selector).forEach(cell => {
+                    // Ignore header cells when applying diff highlights
+                    if (cell.classList.contains('row-0-cell') || cell.getAttribute('data-row') === '0') return;
+
                     if (cell.textContent.trim() === oldVal) {
                         if (!cell.dataset.origText) cell.dataset.origText = cell.innerHTML;
                         cell.innerHTML = `<div class="diff-container"><span class="diff-old">${oldVal}</span><span class="diff-arrow">&rarr;</span><span class="diff-new">${newVal}</span></div>`;
