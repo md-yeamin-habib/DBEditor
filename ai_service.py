@@ -110,31 +110,46 @@ class AIService:
 
         if any(kw in query_lower for kw in ["round off", "round values", "round integers", "round column", "round"]):
             return self._stage_round_values(active_table, query_text)
+        
         elif any(kw in query_lower for kw in ["truncate", "error margin", "margin of error", "remove error", "strip margin", "+-", "±"]):
             return self._stage_truncate_margin_of_error(active_table, query_text)
+        
         elif any(kw in query_lower for kw in ["average of", "avg of", "top", "merge columns", "replace with average"]):
             return self._handle_subject_aggregation(active_table, query_text, mode="AVG")
+        
         elif any(kw in query_lower for kw in ["total of", "sum of", "total score", "add total", "replace with total"]):
             return self._handle_subject_aggregation(active_table, query_text, mode="SUM")
+        
         elif any(kw in query_lower for kw in ["change", "update", "replace value", "set"]):
             return self._stage_cell_value_change(active_table, query_text)
+        
         elif "duplicate" in query_lower or "duplicates" in query_lower:
             if any(kw in query_lower for kw in ["delete", "remove", "drop", "clear"]):
                 return self._stage_remove_duplicates(active_table)
             else:
                 return self._find_duplicates(active_table)
+            
         elif any(kw in query_lower for kw in ["fill missing", "fill null", "replace empty", "fill empty"]):
             return self._stage_fill_missing_values(active_table, query_text)
-        elif any(kw in query_lower for kw in ["sports", "standings", "leaderboard", "department points", "most 1st"]):
+        
+        elif any(kw in query_lower for kw in ["events won", "events participated", "most events", "won the most", "participant leaderboard"]):
+            return self._participant_event_standings()
+        
+        elif any(kw in query_lower for kw in ["sports", "standings", "leaderboard", "department points", "most 1st", "department leaderboard"]):
             return self._sports_department_standings()
+        
         elif any(kw in query_lower for kw in ["student profile", "career aspiration", "marks and phone", "student details"]):
             return self._generate_student_profile(query_text)
+        
         elif any(kw in query_lower for kw in ["total cost", "sum", "total price", "bought", "bill"]):
             return self._calculate_sum(active_table)
+        
         elif any(kw in query_lower for kw in ["add rank", "rank column", "rank", "rank students"]):
             return self._stage_rank_column(active_table, query_text)
+        
         elif any(kw in query_lower for kw in ["missing", "null", "empty", "audit"]):
             return self._check_missing_values(active_table)
+        
         else:
             return {
                 "message": f"I analyzed your query: '{query_text}'. No direct action was matched.",
@@ -540,7 +555,7 @@ class AIService:
                     return {"message": "No sports tables found in active session database.", "actions": []}
 
                 unions = [f'SELECT department_name, position FROM "{t}" WHERE position IS NOT NULL AND position != ""' for t in sports_tables]
-                target_table_name = "Sports_Leaderboard"
+                target_table_name = "Department_Leaderboard"
 
                 cursor.execute(f'DROP TABLE IF EXISTS "{target_table_name}";')
                 cursor.execute(f"""
@@ -567,6 +582,71 @@ class AIService:
             except Exception as e:
                 conn.rollback()
                 return {"message": f"Sports analytics query failed: {str(e)}", "actions": []}
+
+    def _participant_event_standings(self) -> dict:
+        with self._db_connection() as (conn, cursor):
+            try:
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+                all_tables = [r[0] for r in cursor.fetchall()]
+                sports_tables = [t for t in all_tables if any(k in t.lower() for k in ["relay", "threelegged", "solo", "sport"])]
+
+                if not sports_tables:
+                    return {"message": "No sports or event tables found in active session database.", "actions": []}
+
+                union_queries = []
+                for t in sports_tables:
+                    cols = self._get_table_columns(cursor, t)
+                    p_cols = [c for c in cols if "participant" in c.lower()]
+                    
+                    if not p_cols or "department_name" not in cols:
+                        continue
+
+                    for p_col in p_cols:
+                        union_queries.append(f'''
+                            SELECT 
+                                "{p_col}" AS participant_name, 
+                                department_name, 
+                                position 
+                            FROM "{t}" 
+                            WHERE "{p_col}" IS NOT NULL AND TRIM(CAST("{p_col}" AS TEXT)) != ""
+                        ''')
+
+                if not union_queries:
+                    return {"message": "No participant data found in sports tables.", "actions": []}
+
+                target_table_name = "Participant_Leaderboard"
+
+                cursor.execute(f'DROP TABLE IF EXISTS "{target_table_name}";')
+                cursor.execute(f"""
+                    CREATE TABLE "{target_table_name}" AS
+                    WITH CombinedEvents AS ({' UNION ALL '.join(union_queries)})
+                    SELECT 
+                        participant_name,
+                        department_name,
+                        COUNT(*) AS participated_in,
+                        COUNT(CASE WHEN position IN ('1', 1, '1st', 'First') THEN 1 END) AS first_in,
+                        COUNT(CASE WHEN position IN ('2', 2, '2nd', 'Second') THEN 1 END) AS second_in,
+                        COUNT(CASE WHEN position IN ('3', 3, '3rd', 'Third') THEN 1 END) AS third_in
+                    FROM CombinedEvents
+                    GROUP BY participant_name, department_name
+                    ORDER BY 
+                        first_in DESC, 
+                        second_in DESC, 
+                        third_in DESC, 
+                        participated_in ASC;
+                """)
+                conn.commit()
+
+                return {
+                    "message": f"Generated new query view table **`{target_table_name}`** in database.",
+                    "actions": [
+                        {"type": "REFRESH_TABLE_LIST"},
+                        {"type": "SWITCH_TABLE", "table_name": target_table_name}
+                    ]
+                }
+            except Exception as e:
+                conn.rollback()
+                return {"message": f"Participant analytics query failed: {str(e)}", "actions": []}
 
     def _generate_student_profile(self, query_text: str) -> dict:
         with self._db_connection() as (conn, cursor):
