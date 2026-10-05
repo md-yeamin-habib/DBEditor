@@ -192,7 +192,7 @@ class AIService:
                         for col in columns:
                             cursor.execute(
                                 f'UPDATE "{table_name}" SET "{col}" = ? WHERE "{col}" = ? OR CAST("{col}" AS TEXT) = ?;',
-                                (new_val, old_val, old_val)
+                                (parsed_new, parsed_old, str(old_val))
                         )
                     msg = f"Updated values from `{old_val}` to `{new_val}` in `{column if column else "all columns"}` in `{table_name}`."
 
