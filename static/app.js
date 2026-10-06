@@ -2502,27 +2502,47 @@ document.addEventListener('DOMContentLoaded', () => {
         const table = tablesData[activeTable];
         if (!table || !Array.isArray(table.rows) || !Array.isArray(table.columns)) return;
 
+        // 1. Filter out completely empty OR sparse/undefined rows safely
+        table.rows = table.rows.filter(row => 
+            Array.isArray(row) && row.some(cell => cell !== undefined && cell !== null && String(cell).trim() !== '')
+        );
+
+        // 2. Identify active column indices (columns that have a header OR cell data)
         const activeColIndices = [];
-        const maxCols = Math.max(table.columns.length, ...table.rows.map(r => (Array.isArray(r) ? r.length : 0)));
+        const maxCols = Math.max(
+            table.columns.length, 
+            ...table.rows.map(r => (Array.isArray(r) ? r.length : 0))
+        );
 
         for (let c = 0; c < maxCols; c++) {
             const colHeaderHasValue = table.columns[c] && String(table.columns[c]).trim() !== '';
-            const colDataHasValue = table.rows.some(r => r[c] !== undefined && r[c] !== null && String(r[c]).trim() !== '');
+            const colDataHasValue = table.rows.some(r => 
+                Array.isArray(r) && r[c] !== undefined && r[c] !== null && String(r[c]).trim() !== ''
+            );
 
             if (colHeaderHasValue || colDataHasValue) {
                 activeColIndices.push(c);
             }
         }
 
+        if (activeColIndices.length === 0 && table.columns.length > 0) {
+            // Fallback: keep existing headers if all cells/headers are empty to prevent total schema drop
+            for (let i = 0; i < table.columns.length; i++) {
+                activeColIndices.push(i);
+            }
+        }
+
+        // 3. Re-index and prune empty column gaps
         table.columns = activeColIndices.map((cIdx, i) => {
             const header = table.columns[cIdx];
             return header && String(header).trim() !== '' ? String(header).trim() : `Column_${i + 1}`;
         });
 
         table.rows = table.rows.map(row => 
-            activeColIndices.map(cIdx => (row[cIdx] !== undefined && row[cIdx] !== null ? row[cIdx] : ''))
+            activeColIndices.map(cIdx => (Array.isArray(row) && row[cIdx] !== undefined && row[cIdx] !== null ? row[cIdx] : ''))
         );
 
+        // 4. Sync cleaned state back to backend staging
         if (typeof syncActiveTableToBackend === 'function') {
             await syncActiveTableToBackend();
         }
