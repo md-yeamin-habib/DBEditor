@@ -2402,29 +2402,86 @@ document.addEventListener('DOMContentLoaded', () => {
         syncActiveTableToBackend();
     }
 
-    function handleDelete() {
-        const selectedCells = getSelectedCells();
-        if (selectedCells.length === 0) return;
+    async function handleDelete() {
+    const selectedCells = getSelectedCells();
+    
+    if (selectedCells.length === 0) return;
 
-        if (typeof saveState === 'function') saveState();
+    saveState();
 
+    const bounds = getTableBoundaries();
+    let minRow = Infinity, maxRow = -Infinity;
+    let minCol = Infinity, maxCol = -Infinity;
+
+    selectedCells.forEach(cell => {
+        const r = parseInt(cell.dataset.row || cell.getAttribute('data-row'), 10);
+        const c = parseInt(cell.dataset.col || cell.getAttribute('data-col'), 10);
+
+        if (!isNaN(r) && r > 0) { // Only track data rows for full row deletion
+            minRow = Math.min(minRow, r);
+            maxRow = Math.max(maxRow, r);
+        }
+        if (!isNaN(c)) {
+            minCol = Math.min(minCol, c);
+            maxCol = Math.max(maxCol, c);
+        }
+    });
+
+    // Check if whole row selection is active (across all table columns, excluding headers)
+    const isFullRowSelection = (minCol <= 0 && maxCol >= bounds.maxCol) && (minRow <= maxRow) && (minRow !== Infinity);
+
+    if (isFullRowSelection) {
+        const rowsToDelete = [];
+        for (let r = minRow; r <= maxRow; r++) {
+            rowsToDelete.push(r);
+        }
+
+        try {
+            const response = await fetch('/api/delete_rows', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    table_name: activeTable,
+                    rows: rowsToDelete,
+                    page: currentPage,
+                    limit: pageSize
+                })
+            });
+
+            const result = await response.json();
+            if (result.status === 'success') {
+                setDirty(true);
+                clearSelections();
+                await loadPageData(activeTable, currentPage);
+            } else {
+                if (window.Dialog) await Dialog.alert(`Failed to delete rows: ${result.message}`, 'Error');
+            }
+        } catch (err) {
+            console.error('Error deleting rows:', err);
+        }
+    } else {
+        // Standard Clearing (Cells, Columns, or Headers)
         const currentData = tablesData[activeTable];
         const startRowOffset = (currentPage - 1) * pageSize;
         let isModified = false;
 
         selectedCells.forEach(cell => {
-            const r = parseInt(cell.dataset.row);
-            const c = parseInt(cell.dataset.col);
+            const r = parseInt(cell.dataset.row || cell.getAttribute('data-row'), 10);
+            const c = parseInt(cell.dataset.col || cell.getAttribute('data-col'), 10);
 
             cell.innerText = '';
 
             if (currentData) {
                 if (r === 0) {
-                    currentData.columns[c] = '';
-                    isModified = true;
+                    // Header / Column title deletion
+                    if (currentData.columns && currentData.columns[c] !== undefined) {
+                        currentData.columns[c] = '';
+                        isModified = true;
+                    }
                 } else {
+                    // Cell value deletion calculated against current page offset
                     const localRowIdx = r - startRowOffset - 1;
-                    if (currentData.rows[localRowIdx]) {
+                    if (currentData.rows && currentData.rows[localRowIdx] && currentData.rows[localRowIdx][c] !== undefined) {
                         currentData.rows[localRowIdx][c] = '';
                         isModified = true;
                     }
@@ -2435,11 +2492,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isModified) {
             setDirty(true);
             if (typeof syncActiveTableToBackend === 'function') {
-                syncActiveTableToBackend();
+                await syncActiveTableToBackend();
             }
         }
     }
- 
+} 
 
     async function sanitizeTablesData() {
         if (!activeTable || !tablesData[activeTable]) return;
@@ -2447,12 +2504,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const table = tablesData[activeTable];
         if (!table || !Array.isArray(table.rows) || !Array.isArray(table.columns)) return;
 
-        // 1. Filter out completely empty rows
-        table.rows = table.rows.filter(row => 
-            Array.isArray(row) && row.some(cell => cell !== undefined && cell !== null && String(cell).trim() !== '')
-        );
-
-        // 2. Identify active column indices (columns that have a header OR cell data)
         const activeColIndices = [];
         const maxCols = Math.max(table.columns.length, ...table.rows.map(r => (Array.isArray(r) ? r.length : 0)));
 
@@ -2465,7 +2516,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        // 3. Re-index and prune empty column gaps
         table.columns = activeColIndices.map((cIdx, i) => {
             const header = table.columns[cIdx];
             return header && String(header).trim() !== '' ? String(header).trim() : `Column_${i + 1}`;
@@ -2475,7 +2525,6 @@ document.addEventListener('DOMContentLoaded', () => {
             activeColIndices.map(cIdx => (row[cIdx] !== undefined && row[cIdx] !== null ? row[cIdx] : ''))
         );
 
-        // 4. AWAIT the sync back to backend staging
         if (typeof syncActiveTableToBackend === 'function') {
             await syncActiveTableToBackend();
         }
