@@ -933,14 +933,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function refreshWorkspaceGrid() {
-        if (typeof fetchTableList === 'function') {
-            await fetchTableList();
-        } else if (typeof loadPageData === 'function' && activeTable) {
-            await loadPageData(activeTable, currentPage || 1);
+        if (activeTable) {
+            await loadPageData(activeTable, currentPage || 1);        
         }
         
-        if (typeof renderTabs === 'function') renderTabs();
-        if (typeof renderGrid === 'function') renderGrid();
+        renderTabs();
+        renderGrid();
     }
 
 
@@ -2403,100 +2401,100 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function handleDelete() {
-    const selectedCells = getSelectedCells();
+        const selectedCells = getSelectedCells();
     
-    if (selectedCells.length === 0) return;
+        if (selectedCells.length === 0) return;
 
-    saveState();
+        saveState();
 
-    const bounds = getTableBoundaries();
-    let minRow = Infinity, maxRow = -Infinity;
-    let minCol = Infinity, maxCol = -Infinity;
-
-    selectedCells.forEach(cell => {
-        const r = parseInt(cell.dataset.row || cell.getAttribute('data-row'), 10);
-        const c = parseInt(cell.dataset.col || cell.getAttribute('data-col'), 10);
-
-        if (!isNaN(r) && r > 0) { // Only track data rows for full row deletion
-            minRow = Math.min(minRow, r);
-            maxRow = Math.max(maxRow, r);
-        }
-        if (!isNaN(c)) {
-            minCol = Math.min(minCol, c);
-            maxCol = Math.max(maxCol, c);
-        }
-    });
-
-    // Check if whole row selection is active (across all table columns, excluding headers)
-    const isFullRowSelection = (minCol <= 0 && maxCol >= bounds.maxCol) && (minRow <= maxRow) && (minRow !== Infinity);
-
-    if (isFullRowSelection) {
-        const rowsToDelete = [];
-        for (let r = minRow; r <= maxRow; r++) {
-            rowsToDelete.push(r);
-        }
-
-        try {
-            const response = await fetch('/api/delete_rows', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    table_name: activeTable,
-                    rows: rowsToDelete,
-                    page: currentPage,
-                    limit: pageSize
-                })
-            });
-
-            const result = await response.json();
-            if (result.status === 'success') {
-                setDirty(true);
-                clearSelections();
-                await loadPageData(activeTable, currentPage);
-            } else {
-                if (window.Dialog) await Dialog.alert(`Failed to delete rows: ${result.message}`, 'Error');
-            }
-        } catch (err) {
-            console.error('Error deleting rows:', err);
-        }
-    } else {
-        // Standard Clearing (Cells, Columns, or Headers)
-        const currentData = tablesData[activeTable];
-        const startRowOffset = (currentPage - 1) * pageSize;
-        let isModified = false;
+        const bounds = getTableBoundaries();
+        let minRow = Infinity, maxRow = -Infinity;
+        let minCol = Infinity, maxCol = -Infinity;
 
         selectedCells.forEach(cell => {
             const r = parseInt(cell.dataset.row || cell.getAttribute('data-row'), 10);
             const c = parseInt(cell.dataset.col || cell.getAttribute('data-col'), 10);
 
-            cell.innerText = '';
-
-            if (currentData) {
-                if (r === 0) {
-                    // Header / Column title deletion
-                    if (currentData.columns && currentData.columns[c] !== undefined) {
-                        currentData.columns[c] = '';
-                        isModified = true;
-                    }
-                } else {
-                    // Cell value deletion calculated against current page offset
-                    const localRowIdx = r - startRowOffset - 1;
-                    if (currentData.rows && currentData.rows[localRowIdx] && currentData.rows[localRowIdx][c] !== undefined) {
-                        currentData.rows[localRowIdx][c] = '';
-                        isModified = true;
-                    }
-                }
+            if (!isNaN(r) && r > 0) { // Only track data rows for full row deletion
+                minRow = Math.min(minRow, r);
+                maxRow = Math.max(maxRow, r);
+            }
+            if (!isNaN(c)) {
+                minCol = Math.min(minCol, c);
+                maxCol = Math.max(maxCol, c);
             }
         });
 
-        if (isModified) {
-            setDirty(true);
-            if (typeof syncActiveTableToBackend === 'function') {
-                await syncActiveTableToBackend();
+        // Check if whole row selection is active (across all table columns, excluding headers)
+        const isFullRowSelection = (minCol <= 0 && maxCol >= bounds.maxCol) && (minRow <= maxRow) && (minRow !== Infinity);
+
+        if (isFullRowSelection) {
+            const rowsToDelete = [];
+            for (let r = minRow; r <= maxRow; r++) {
+                rowsToDelete.push(r);
+            }
+
+            try {
+                const response = await fetch('/api/delete_rows', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        table_name: activeTable,
+                        rows: rowsToDelete,
+                        page: currentPage,
+                        limit: pageSize
+                    })
+                });
+
+                const result = await response.json();
+                if (result.status === 'success') {
+                    setDirty(true);
+                    clearSelections();
+                    await loadPageData(activeTable, currentPage);
+                } else {
+                    if (window.Dialog) await Dialog.alert(`Failed to delete rows: ${result.message}`, 'Error');
+                }
+            } catch (err) {
+                console.error('Error deleting rows:', err);
+            }
+        } else {
+            // Standard Clearing (Cells, Columns, or Headers)
+            const currentData = tablesData[activeTable];
+            const startRowOffset = (currentPage - 1) * pageSize;
+            let isModified = false;
+
+            selectedCells.forEach(cell => {
+                const r = parseInt(cell.dataset.row || cell.getAttribute('data-row'), 10);
+                const c = parseInt(cell.dataset.col || cell.getAttribute('data-col'), 10);
+
+                cell.innerText = '';
+
+                if (currentData) {
+                    if (r === 0) {
+                        // Header / Column title deletion
+                        if (currentData.columns && currentData.columns[c] !== undefined) {
+                            currentData.columns[c] = '';
+                            isModified = true;
+                        }
+                    } else {
+                        // Cell value deletion calculated against current page offset
+                        const localRowIdx = r - startRowOffset - 1;
+                        if (currentData.rows && currentData.rows[localRowIdx] && currentData.rows[localRowIdx][c] !== undefined) {
+                            currentData.rows[localRowIdx][c] = '';
+                            isModified = true;
+                        }
+                    }
+                }
+            });
+
+            if (isModified) {
+                setDirty(true);
+                if (typeof syncActiveTableToBackend === 'function') {
+                    await syncActiveTableToBackend();
+                }
             }
         }
-    }
-} 
+    }    
 
     async function sanitizeTablesData() {
         if (!activeTable || !tablesData[activeTable]) return;
