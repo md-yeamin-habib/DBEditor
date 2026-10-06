@@ -704,12 +704,22 @@ class AIService:
 
             clean_col = self._sql_clean_numeric_expr(target_col)
             bought_col = next((c for c in columns if c.lower() in ["bought", "status", "purchased"]), None)
+            discount_col = next((c for c in columns if any(k in c.lower() for k in ["discount", "disc", "off"])), None)
 
+            # Build value expression considering discount if present
+            if discount_col:
+                clean_disc = self._sql_clean_numeric_expr(discount_col)
+                # Apply discount; fallback COALESCE ensures missing/null discount defaults to 0%
+                value_expr = f'({clean_col} * (100.0 - COALESCE({clean_disc}, 0.0)) / 100.0)'
+            else:
+                value_expr = clean_col
+
+            # Construct final SQL query based on 'bought' filter existence
             if bought_col:
-                cursor.execute(f'SELECT SUM({clean_col}) FROM "{table_name}" WHERE LOWER("{bought_col}") in (\'yes\', \'y\', \'true\', \'1\');')
+                cursor.execute(f'SELECT SUM({value_expr}) FROM "{table_name}" WHERE LOWER("{bought_col}") in (\'yes\', \'y\', \'true\', \'1\');')
                 msg = f"Total sum of **{target_col}** for bought items in `{table_name}`: **${cursor.fetchone()[0] or 0.0:.2f}**"
             else:
-                cursor.execute(f'SELECT SUM({clean_col}) FROM "{table_name}";')
+                cursor.execute(f'SELECT SUM({value_expr}) FROM "{table_name}";')
                 msg = f"Total sum of **{target_col}** in `{table_name}`: **${cursor.fetchone()[0] or 0.0:.2f}**"
 
             return {"message": msg, "actions": []}
