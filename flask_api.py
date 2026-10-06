@@ -306,5 +306,29 @@ def ai_confirm():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route("/api/delete_rows", methods=["POST"])
+def delete_rows():
+    try:
+        data = request.get_json() or {}
+        table_name = data.get("table_name")
+        row_indices = data.get("rows", [])
+        page = data.get("page", 1)
+        limit = data.get("limit", 100)
+
+        if not table_name or not row_indices:
+            return jsonify({"status": "error", "message": "table_name and rows are required"}), 400
+
+        success = db_manager.delete_rows_from_staging(
+            table_name=table_name,
+            row_indices=row_indices,
+            page=page,
+            limit=limit
+        )
+        if success:
+            return jsonify({"status": "success"})
+        return jsonify({"status": "error", "message": f"Table '{table_name}' not found"}), 404
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
