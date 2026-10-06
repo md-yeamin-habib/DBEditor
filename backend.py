@@ -7,7 +7,6 @@ import shutil
 import logging
 import sys
 
-
 # Custom Handler that forces Python to write log lines to disk instantly
 class FlushingFileHandler(logging.FileHandler):
     def emit(self, record):
@@ -96,11 +95,10 @@ class DatabaseManager:
         finally:
             conn.close()
 
-
     def update_staged_data(self, table_name: str, rows: list, columns: list, page: int = 1, limit: int = None):
         """
         Executes targeted SQL operations against the active working session SQLite database file.
-        Supports full-table updates or page-scoped updates when limit is provided.
+        Detects blank/empty rows and explicitly deletes their corresponding _rowid_ entries via DELETE WHERE _rowid_ IN (...).
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -125,12 +123,21 @@ class DatabaseManager:
                     f'CREATE TABLE "{table_name}" (_rowid_ INTEGER PRIMARY KEY AUTOINCREMENT, {", ".join(col_defs)});'
                 )
 
-                if rows:
+                # Insert non-empty rows only
+                valid_rows = []
+                for r in rows:
+                    sanitized_row = [str(x).strip() if x is not None else "" for x in r[:col_count]]
+                    while len(sanitized_row) < col_count:
+                        sanitized_row.append("")
+                    if any(cell != "" for cell in sanitized_row):
+                        valid_rows.append(sanitized_row)
+
+                if valid_rows:
                     col_names = ", ".join([f'"{c}"' for c in columns])
                     placeholders = ", ".join(["?"] * col_count)
                     cursor.executemany(
                         f'INSERT INTO "{table_name}" ({col_names}) VALUES ({placeholders});',
-                        rows,
+                        valid_rows,
                     )
             else:
                 existing_cols = self._get_user_columns(cursor, table_name)
@@ -151,12 +158,10 @@ class DatabaseManager:
                 col_names_str = ", ".join([f'"{c}"' for c in columns]) if columns else ""
 
                 if col_names_str:
-                    # Calculate page bounds
-                    offset = (page - 1) * limit if limit else 0
-
-                    # Fetch only rows for the specific page if limit is supplied
+                    # Fetch existing database rows for this scope
                     query = f'SELECT _rowid_, {col_names_str} FROM "{table_name}" ORDER BY _rowid_ ASC'
                     if limit is not None:
+                        offset = (page - 1) * limit
                         query += f' LIMIT {int(limit)} OFFSET {int(offset)}'
                 
                     cursor.execute(query)
@@ -164,48 +169,60 @@ class DatabaseManager:
                     db_rowid_s = [r[0] for r in db_data]
                     db_rows = [list(r[1:]) for r in db_data]
 
-                    # 4. UPDATE EXISTING ROWS OR INSERT NEW ROWS
+                    rows_to_delete = []
+                    
+                    # 4. PROCESS ROWS FOR UPDATE, INSERT, OR DELETE
                     for idx, r in enumerate(rows):
-                        sanitized_row = [str(x).strip() if x is not None else "" for x in r]
+                        sanitized_row = [str(x).strip() if x is not None else "" for x in r[:col_count]]
                         while len(sanitized_row) < col_count:
                             sanitized_row.append("")
-                        sanitized_row = sanitized_row[:col_count]
+
+                        is_blank = all(cell == "" for cell in sanitized_row)
 
                         if idx < len(db_rowid_s):
                             row_id = db_rowid_s[idx]
-                            old_row = [str(x).strip() if x is not None else "" for x in db_rows[idx]]
+                            
+                            if is_blank:
+                                # Row cleared in UI -> mark _rowid_ for deletion
+                                rows_to_delete.append(row_id)
+                            else:
+                                old_row = [str(x).strip() if x is not None else "" for x in db_rows[idx]]
+                                if old_row != sanitized_row:
+                                    changed_cols = []
+                                    changed_vals = []
+                                    for c_idx, col in enumerate(columns):
+                                        old_val = old_row[c_idx] if c_idx < len(old_row) else ""
+                                        new_val = sanitized_row[c_idx]
+                                        if old_val != new_val:
+                                            changed_cols.append(f'"{col}" = ?')
+                                            changed_vals.append(new_val)
 
-                            if old_row != sanitized_row:
-                                changed_cols = []
-                                changed_vals = []
-                                for c_idx, col in enumerate(columns):
-                                    old_val = old_row[c_idx] if c_idx < len(old_row) else ""
-                                    new_val = sanitized_row[c_idx]
-                                    if old_val != new_val:
-                                        changed_cols.append(f'"{col}" = ?')
-                                        changed_vals.append(new_val)
-
-                                if changed_cols:
-                                    set_clause = ", ".join(changed_cols)
-                                    cursor.execute(
-                                        f'UPDATE "{table_name}" SET {set_clause} WHERE _rowid_ = ?;',
-                                        (*changed_vals, row_id),
-                                    )
+                                    if changed_cols:
+                                        set_clause = ", ".join(changed_cols)
+                                        cursor.execute(
+                                            f'UPDATE "{table_name}" SET {set_clause} WHERE _rowid_ = ?;',
+                                            (*changed_vals, row_id),
+                                        )
                         else:
-                            # INSERT NEW ROW
-                            placeholders = ", ".join(["?"] * col_count)
-                            cursor.execute(
-                                f'INSERT INTO "{table_name}" ({col_names_str}) VALUES ({placeholders});',
-                                sanitized_row,
-                            )
+                            # New row added at the bottom (ignore if blank)
+                            if not is_blank:
+                                placeholders = ", ".join(["?"] * col_count)
+                                cursor.execute(
+                                    f'INSERT INTO "{table_name}" ({col_names_str}) VALUES ({placeholders});',
+                                    sanitized_row,
+                                )
 
-                    # 5. DELETE REMOVED ROWS (Restricted only to the active page slice)
+                    # Check for excess rows removed from page trailing end
                     if len(rows) < len(db_rowid_s):
                         excess_ids = db_rowid_s[len(rows):]
-                        placeholders = ", ".join(["?"] * len(excess_ids))
+                        rows_to_delete.extend(excess_ids)
+
+                    # 5. EXECUTE BULK DELETE FOR ALL IDENTIFIED BLANK OR REMOVED ROWIDs
+                    if rows_to_delete:
+                        placeholders = ", ".join(["?"] * len(rows_to_delete))
                         cursor.execute(
                             f'DELETE FROM "{table_name}" WHERE _rowid_ IN ({placeholders});',
-                            excess_ids,
+                            rows_to_delete,
                         )
 
             conn.commit()
@@ -225,11 +242,9 @@ class DatabaseManager:
             return []
 
         try:
-            # errors="ignore" drops invalid bytes instead of crashing
             with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
 
-            # Filter strictly for 'EXEC SQL:' lines while excluding SELECT and PRAGMA
             filtered_logs = []
             for line in lines:
                 if "EXEC SQL:" in line:
@@ -256,18 +271,15 @@ class DatabaseManager:
         cursor.execute(f'PRAGMA table_info("{table_name}");')
         cols_info = cursor.fetchall()
     
-        # cols_info row format: (cid, name, type, notnull, dflt_value, pk)
         user_cols = []
         for col in cols_info:
             col_name = col[1]
-            is_pk = col[5] == 1  # 1 if column is part of PRIMARY KEY, 0 otherwise
+            is_pk = col[5] == 1
             col_type = col[2].upper()
         
-            # 1. Block SQLite internal rowid aliases
             if col_name.lower() in ("_row_id", "_rowid_", "rowid", "oid"):
                 continue
             
-            # 2. Block single INTEGER primary key columns (e.g., id, student_id, item_id)
             if is_pk and col_type in ("INTEGER", "INT", "BIGINT", "SMALLINT"):
                 continue
             
@@ -311,7 +323,6 @@ class DatabaseManager:
             dst.write(src.read())
 
         return self.refresh_staged_data_from_db()
-
 
     def refresh_staged_data_from_db(self):
         self.staged_data = {}
@@ -360,7 +371,6 @@ class DatabaseManager:
         cursor = conn.cursor()
 
         try:
-            # Fetch all non-system tables directly from SQLite
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
             tables = [row[0] for row in cursor.fetchall()]
 
@@ -370,14 +380,12 @@ class DatabaseManager:
                 for table_name in tables:
                     ws = wb.create_sheet(title=table_name)
 
-                    # Get column names
                     cursor.execute(f'PRAGMA table_info("{table_name}");')
                     columns = self._get_user_columns(cursor, table_name)
 
                     if columns:
                         ws.append(columns)
 
-                        # Query ALL rows for export (ignoring pagination limits)
                         col_select = ", ".join([f'"{c}"' for c in columns])
                         cursor.execute(f'SELECT {col_select} FROM "{table_name}" ORDER BY _rowid_ ASC;')
                         all_rows = cursor.fetchall()
@@ -430,9 +438,8 @@ class DatabaseManager:
         existing_cols = [
             c.strip() for c in current_table.get("columns", []) if c.strip()
         ]
-        existing_rows = current_table.get("rows", [])
 
-        if not existing_cols and not existing_rows:
+        if not existing_cols:
             self.staged_data[target_table] = {
                 "columns": imported_columns,
                 "rows": imported_data_rows,
@@ -447,13 +454,10 @@ class DatabaseManager:
                     f"but imported Excel file has: {imported_columns}"
                 )
 
-            self.staged_data[target_table]["rows"].extend(imported_data_rows)
-
-        # Sync changes to persistent SQLite DB session
         self.update_staged_data(
             target_table,
-            self.staged_data[target_table]["rows"],
-            self.staged_data[target_table]["columns"],
+            imported_data_rows,
+            imported_columns if not existing_cols else existing_cols,
         )
 
         return self.staged_data[target_table]
@@ -480,19 +484,15 @@ class DatabaseManager:
         cursor = conn.cursor()
 
         try:
-            # Check if table exists
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (table_name,))
             if not cursor.fetchone():
                 return {"columns": [], "rows": [], "total_rows": 0, "page": page, "total_pages": 0}
 
-            # 1. Total row count
             cursor.execute(f'SELECT COUNT(*) FROM "{table_name}"')
             total_rows = cursor.fetchone()[0]
 
-            # 2. Get user columns
             columns = self._get_user_columns(cursor, table_name)
 
-            # 3. Build dynamic ORDER BY clause safely
             offset = (page - 1) * limit
             rows = []
             if columns:
@@ -501,12 +501,10 @@ class DatabaseManager:
                 order_parts = []
                 if sort_orders and isinstance(sort_orders, dict):
                     for col_name, direction in sort_orders.items():
-                        # Validate sort column against table columns to prevent SQL injection
                         if col_name in columns:
                             sort_dir = "DESC" if str(direction).upper() == "DESC" else "ASC"
                             order_parts.append(f'"{col_name}" {sort_dir}')
 
-                # Append fallback row order and construct ORDER BY clause
                 if order_parts:
                     order_parts.append('_rowid_ ASC')
                     order_clause = f"ORDER BY {', '.join(order_parts)}"
@@ -552,7 +550,6 @@ class DatabaseManager:
                     continue
 
                 for col in columns:
-                    # Valid SQLite subquery syntax for UNION ALL
                     if match_word:
                         subqueries.append(f'''
                             SELECT '{table_name}' AS table_name, 
@@ -596,18 +593,15 @@ class DatabaseManager:
             for table_name, db_rowid, visual_pos, col_name, cell_val in results:
                 col_index = scope[table_name].index(col_name) if table_name in scope else 0
                 
-                # 1-based page index
                 calc_page = ((visual_pos - 1) // page_size) + 1
-                
-                # 1-based row index within that page (1..100)
                 row_in_page = ((visual_pos - 1) % page_size) + 1
 
                 matches.append({
                     'table': table_name,
-                    'row': row_in_page,      # Matches DOM data-row="1..100"
+                    'row': row_in_page,
                     'col_name': col_name,
                     'col': col_index,
-                    'page': calc_page        # Matches target page
+                    'page': calc_page
                 })
 
         except sqlite3.Error as e:
@@ -616,4 +610,51 @@ class DatabaseManager:
             conn.close()
 
         return matches
-    
+
+    def delete_rows_from_staging(self, table_name: str, row_indices: list, page: int = 1, limit: int = 100) -> bool:
+        """
+        Deletes specific rows from a table using their relative visual positions on a given page.
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (table_name,))
+            if not cursor.fetchone():
+                return False
+
+            columns = self._get_user_columns(cursor, table_name)
+            if not columns:
+                return False
+
+            col_names_str = ", ".join([f'"{c}"' for c in columns])
+            offset = (page - 1) * limit
+
+            # Retrieve database _rowid_s for the current page
+            query = f'SELECT _rowid_ FROM "{table_name}" ORDER BY _rowid_ ASC LIMIT ? OFFSET ?;'
+            cursor.execute(query, (limit, offset))
+            db_data = cursor.fetchall()
+            db_rowids = [r[0] for r in db_data]
+
+            # Map 1-based relative row index on current page to database _rowid_
+            rowids_to_delete = []
+            for r_idx in row_indices:
+                # Convert 1-based row relative to page offset
+                relative_idx = r_idx - 1 - offset if r_idx > offset else r_idx - 1
+                if 0 <= relative_idx < len(db_rowids):
+                    rowids_to_delete.append(db_rowids[relative_idx])
+
+            if rowids_to_delete:
+                placeholders = ", ".join(["?"] * len(rowids_to_delete))
+                cursor.execute(
+                    f'DELETE FROM "{table_name}" WHERE _rowid_ IN ({placeholders});',
+                    rowids_to_delete,
+                )
+                conn.commit()
+
+            self.refresh_staged_data_from_db()
+            return True
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
