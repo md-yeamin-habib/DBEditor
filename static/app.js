@@ -2673,18 +2673,47 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify({ tables: tablesData })
             });
 
-            const data = await response.json();
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.message || 'Export failed');
+            }
 
-            if (!response.ok || data.status !== 'success') {
+            const contentType = response.headers.get('Content-Type') || '';
+
+            // 1. Hosted Mode: Server streams binary file blob
+            if (contentType.includes('application/vnd.openxmlformats-officedocument') || contentType.includes('octet-stream')) {
+                const blob = await response.blob();
+                const contentDisposition = response.headers.get('Content-Disposition');
+                let filename = 'exported_database.xlsx';
+                if (contentDisposition && contentDisposition.includes('filename=')) {
+                    filename = contentDisposition
+                        .split('filename=')[1]
+                        .replace(/["']/g, '')
+                        .trim();
+                }
+
+                const downloadUrl = window.URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = downloadUrl;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                window.URL.revokeObjectURL(downloadUrl);
+                return;
+            }
+
+            // 2. Desktop/Local Mode: Server returns path JSON
+            const data = await response.json();
+            if (data.status === 'success' && data.filepath) {
+                await Dialog.alert(
+                    `File successfully exported to:\n${data.filepath}`,
+                    'Export Successful'
+                );
+            } else {
                 throw new Error(data.message || 'Export failed');
             }
 
-            const exportedPath = data.filepath || data.path || 'Exported successfully';
-
-            await Dialog.alert(
-                `File successfully exported to:\n${exportedPath}`,
-                'Export Successful'
-            );
         } catch (err) {
             await Dialog.alert(`Export failed: ${err.message}`, 'Export Error');
         }
