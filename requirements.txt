@@ -1,0 +1,5 @@
+Flask
+Flask-CORS
+openpyxl
+gunicorn
+pywebview
