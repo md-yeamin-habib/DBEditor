@@ -180,13 +180,23 @@ def delete_table():
 @app.route("/api/export_xlsx", methods=["GET", "POST"])
 def export_xlsx():
     try:
-        saved_path = db_manager.export_xlsx()
+        export_file_path = db_manager.export_xlsx() 
 
+        IS_HOSTED = os.getenv("IS_HOSTED", "false").lower() == "true"
+
+        if IS_HOSTED:
+            return send_file(
+                export_file_path,
+                as_attachment=True,
+                download_name=os.path.basename(export_file_path),
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        
         return jsonify({
             "status": "success",
-            "message": f"Exported successfully to Downloads!",
-            "path": saved_path
+            "filepath": export_file_path
         })
+
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 

@@ -2665,7 +2665,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function exportXlsx() {
-        syncActiveTableToBackend();
+        await syncActiveTableToBackend();
         try {
             const response = await fetch('/api/export_xlsx', {
                 method: 'POST',
@@ -2679,9 +2679,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(data.message || 'Export failed');
             }
 
-            // Show a UI notification instead of triggering a browser blob download
+            const exportedPath = data.filepath || data.path || 'Exported successfully';
+
             await Dialog.alert(
-                `File successfully exported to:\n${data.path}`,
+                `File successfully exported to:\n${exportedPath}`,
                 'Export Successful'
             );
         } catch (err) {
